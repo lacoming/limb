@@ -24,6 +24,53 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        {/* Preload cell atlas assets for faster initial load */}
+        <link
+          rel="preload"
+          as="fetch"
+          href="/sprites/cell/left/atlas_512.json"
+          crossOrigin="anonymous"
+        />
+        <link
+          rel="preload"
+          as="image"
+          href="/sprites/cell/left/atlas_512.webp"
+        />
+        <link
+          rel="preload"
+          as="fetch"
+          href="/sprites/cell/right/atlas_512.json"
+          crossOrigin="anonymous"
+        />
+        <link
+          rel="preload"
+          as="image"
+          href="/sprites/cell/right/atlas_512.webp"
+        />
+        <link
+          rel="preload"
+          as="fetch"
+          href="/sprites/cell/up/atlas_512.json"
+          crossOrigin="anonymous"
+        />
+        <link
+          rel="preload"
+          as="image"
+          href="/sprites/cell/up/atlas_512.webp"
+        />
+        <link
+          rel="preload"
+          as="fetch"
+          href="/sprites/cell/down/atlas_512.json"
+          crossOrigin="anonymous"
+        />
+        <link
+          rel="preload"
+          as="image"
+          href="/sprites/cell/down/atlas_512.webp"
+        />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >

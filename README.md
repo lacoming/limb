@@ -20,6 +20,20 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Cell Frame Management
+
+The project uses 2.5D turntable frames for cell sprites. Frame files are stored in `public/sprites/cell/{left,right,up,down}/` directories.
+
+### Renaming Frame Files
+
+Frame files need to be renamed from the original format (`cell_195.png0001.png`) to a normalized format (`frame_01.png`). Run:
+
+```bash
+pnpm frames:rename
+```
+
+This script safely renames files in all four direction folders, skipping files that are already renamed or don't match the expected pattern.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
