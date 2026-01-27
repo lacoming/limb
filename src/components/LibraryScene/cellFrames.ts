@@ -29,7 +29,8 @@ export const DEADZONE_PX =
 export const ENTER_PX = 120;
 export const MAX_PX = 300;
 export const EXIT_PX = 70;
-export const FACTOR_LERP_K = 0.18;
+const K_RISE = 35; // быстро тянем к 9 кадру
+const K_FALL = 14; // мягче возвращаемся к 1 кадру
 export const AXIS_LOCK_DELTA = 10; // px - порог для анти-дребезга при близких значениях осей
 
 /**
@@ -155,13 +156,16 @@ export function computeFrameState(
   // Compute raw t (0..1) based on magnitude (only from winning axis)
   const tRaw = Math.min(1, mag / STRETCH_MAX_PX);
 
-  // Smooth t with lerp
-  const lerpK = 1 - Math.exp(-FACTOR_LERP_K * (deltaMS / 1000));
-  const tSmoothed = prevT + lerpK * (tRaw - prevT);
+  // Smooth t with lerp - choose coefficient based on direction
+  const k = tRaw > prevT ? K_RISE : K_FALL;
+  const lerpK = 1 - Math.exp(-k * (deltaMS / 1000));
+  let tSmoothed = prevT + lerpK * (tRaw - prevT);
+  // Clamp tSmoothed to [0, 1]
+  tSmoothed = Math.max(0, Math.min(1, tSmoothed));
 
   // Map tSmoothed to frame index (1..9)
   // Use floor with small epsilon to ensure proper rounding
-  const frameIndex = 1 + Math.floor(tSmoothed * (FRAME_COUNT - 1) + 1e-6);
+  const frameIndex = Math.max(1, Math.min(9, 1 + Math.floor(tSmoothed * (FRAME_COUNT - 1) + 1e-6)));
 
   return {
     dir,
