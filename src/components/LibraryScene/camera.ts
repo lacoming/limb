@@ -30,7 +30,32 @@ export const CONTENT_BOUNDS: ContentBounds = {
   maxY: CELL_2D_MAX_Y + CONTENT_PADDING,
 };
 
-export const ZOOM_MIN = 0.5;
+/**
+ * Computes content bounds from a grid of cells.
+ * Returns bounds that encompass all cells with padding.
+ * If grid is empty, returns null.
+ * 
+ * Assumes cells are positioned with origin (top-left) at (gx * cellSizeX, gy * cellSizeY).
+ */
+export function getGridBounds(
+  gridBounds: { minGX: number; maxGX: number; minGY: number; maxGY: number } | null,
+  cellSizeX: number,
+  cellSizeY: number
+): ContentBounds | null {
+  if (!gridBounds) return null;
+
+  // Calculate world bounds from grid bounds
+  // Each cell has origin (top-left) at (gx * cellSizeX, gy * cellSizeY)
+  // Cell extends from origin to (origin + cellSizeX, origin + cellSizeY)
+  return {
+    minX: gridBounds.minGX * cellSizeX - CONTENT_PADDING,
+    minY: gridBounds.minGY * cellSizeY - CONTENT_PADDING,
+    maxX: (gridBounds.maxGX + 1) * cellSizeX + CONTENT_PADDING,
+    maxY: (gridBounds.maxGY + 1) * cellSizeY + CONTENT_PADDING,
+  };
+}
+
+export const ZOOM_MIN = 0.05;
 export const ZOOM_MAX = 2.5;
 
 /** Fraction of half-screen (in world units) with no resistance; ~25% = can drag noticeably. */

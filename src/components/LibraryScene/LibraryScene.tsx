@@ -1,13 +1,7 @@
 "use client";
 
 import { useRef, useEffect, forwardRef, useImperativeHandle } from "react";
-import {
-  Application,
-  Assets,
-  Container,
-  FederatedPointerEvent,
-  Sprite,
-} from "pixi.js";
+import { Application, Container, FederatedPointerEvent, Sprite, Point } from "pixi.js";
 import {
   advanceSpring,
   applyPanWithRubber,
@@ -15,61 +9,33 @@ import {
   createInitialCamera,
   getSingleCellCenterTarget,
   getWorldTransformInto,
-  worldToScreen,
   zoomAboutScreenPoint,
+  getGridBounds,
   type CameraState,
+  type ContentBounds,
 } from "./camera";
+import { cellKey, devAssertNeighborDirection } from "../../lib/cellKeys";
 import {
-  createCellContainerTurntableFrames,
-  updateCellTurntableFrames,
-} from "./cellSprite";
-import { unloadAllTextures, Direction, hasTextures, getCachedTextures } from "./cellFrames";
-import { preloadAtlases } from "../../lib/preloadCellFrames";
+  LibraryGrid,
+  type CellId,
+} from "../../lib/libraryGrid";
+import { preloadShelfAssets } from "../../lib/shelfAssets";
+import { computeShelfMetrics } from "../../lib/shelfMetrics";
+import { buildShelfContainer } from "../../lib/shelfComposer";
+import { bakeShelf } from "../../lib/shelfBake";
+import { updateSelectionOverlay } from "./cellSelection";
 
 const DEBUG_THROTTLE_MS = 250;
 const BG = 0x1a1a1a;
 
-/**
- * Prewarms GPU textures by uploading them to GPU memory.
- * Creates a temporary hidden sprite and assigns textures from each direction
- * (frames 0, 4, 8) to trigger GPU upload via renderer.render().
- */
-async function prewarmGpuTextures(app: Application, stage: Container): Promise<void> {
-  const idleTextures = getCachedTextures(Direction.Left);
-  if (!idleTextures || idleTextures.length === 0) return;
-  
-  const idleTexture = idleTextures[0]; // frame 1 для возврата
-  const tempSprite = new Sprite({ texture: idleTexture, anchor: 0.5 });
-  tempSprite.alpha = 0;
-  tempSprite.visible = false;
-  stage.addChild(tempSprite);
-  
-  const directions = [Direction.Left, Direction.Right, Direction.Up, Direction.Down];
-  const frameIndices = [0, 4, 8]; // frames[0], frames[4], frames[8]
-  
-  for (const dir of directions) {
-    const textures = getCachedTextures(dir);
-    if (!textures) continue;
-    
-    for (const idx of frameIndices) {
-      if (idx < textures.length) {
-        tempSprite.texture = textures[idx];
-        app.renderer.render(stage);
-      }
-    }
-  }
-  
-  // Вернуть на idle
-  tempSprite.texture = idleTexture;
-  app.renderer.render(stage);
-  
-  // Удалить временный sprite
-  stage.removeChild(tempSprite);
-  tempSprite.destroy();
-}
-
 export interface LibrarySceneRef {
   resetCamera: () => void;
+  addCellAt: (gx: number, gy: number) => boolean;
+  getCellCount: () => number;
+  getCells: () => Array<{ id: CellId; gx: number; gy: number }>;
+  removeCell: (id: CellId) => boolean;
+  clear: () => void;
+  getEdgeErrors: () => number;
 }
 
 export interface LibrarySceneProps {
@@ -78,31 +44,18 @@ export interface LibrarySceneProps {
     y: number;
     zoom: number;
   }) => void;
-  onStretchDebug?: (data: {
-    mag: number;
-    t: number;
-    frameIndex: number;
-    dir: string;
-    offsetX: number;
-    offsetY: number;
-    absX: number;
-    absY: number;
-    axis: 'x' | 'y' | null;
-  }) => void;
-  onAtlasLoadChange?: (data: {
-    loadedDirs: string[];
-  }) => void;
+  onCellCountChange?: (count: number) => void;
 }
 
 export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
-  function LibraryScene({ onCameraChange, onStretchDebug, onAtlasLoadChange }, ref) {
+  function LibraryScene({ onCameraChange, onCellCountChange }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const onCameraChangeRef = useRef(onCameraChange);
-    onCameraChangeRef.current = onCameraChange;
-    const onStretchDebugRef = useRef(onStretchDebug);
-    onStretchDebugRef.current = onStretchDebug;
-    const onAtlasLoadChangeRef = useRef(onAtlasLoadChange);
-    onAtlasLoadChangeRef.current = onAtlasLoadChange;
+    const onCellCountChangeRef = useRef(onCellCountChange);
+    useEffect(() => {
+      onCameraChangeRef.current = onCameraChange;
+      onCellCountChangeRef.current = onCellCountChange;
+    }, [onCameraChange, onCellCountChange]);
 
     useImperativeHandle(
       ref,
@@ -110,11 +63,37 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         resetCamera() {
           resetCameraRef.current?.();
         },
+        addCellAt(gx: number, gy: number) {
+          return addCellAtRef.current?.(gx, gy) ?? false;
+        },
+        getCellCount() {
+          return getCellCountRef.current?.() ?? 0;
+        },
+        getCells() {
+          return getCellsRef.current?.() ?? [];
+        },
+        removeCell(id: CellId) {
+          return removeCellRef.current?.(id) ?? false;
+        },
+        clear() {
+          clearRef.current?.();
+        },
+        getEdgeErrors() {
+          return getEdgeErrorsRef.current?.() ?? 0;
+        },
       }),
       []
     );
 
     const resetCameraRef = useRef<(() => void) | null>(null);
+    const addCellAtRef = useRef<((gx: number, gy: number) => boolean) | null>(null);
+    const getCellCountRef = useRef<(() => number) | null>(null);
+    const getCellsRef = useRef<
+      (() => Array<{ id: CellId; gx: number; gy: number }>) | null
+    >(null);
+    const removeCellRef = useRef<((id: CellId) => boolean) | null>(null);
+    const clearRef = useRef<(() => void) | null>(null);
+    const getEdgeErrorsRef = useRef<(() => number) | null>(null);
     const initOnceRef = useRef(false);
 
     useEffect(() => {
@@ -147,74 +126,249 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         world.addChild(worldContent);
         app.stage.addChild(world);
 
-        // Boot preload: load all atlases before any interaction
-        let atlasesReady = false;
-        await preloadAtlases([
-          Direction.Left,
-          Direction.Right,
-          Direction.Up,
-          Direction.Down,
-        ]);
+        const shelfTextures = await preloadShelfAssets();
         if (cancelled || !app) return;
         if (containerRef.current !== container) return;
-        atlasesReady = true;
 
-        // Prewarm GPU textures to avoid first-frame freeze
-        let gpuPrewarmed = false;
-        await prewarmGpuTextures(app, app.stage);
-        if (cancelled || !app) return;
-        if (containerRef.current !== container) return;
-        gpuPrewarmed = true;
+        const metrics = computeShelfMetrics(shelfTextures);
 
-        // Notify about loaded atlases
-        const updateAtlasStatus = () => {
-          const loadedDirs: string[] = [];
-          if (hasTextures(Direction.Left)) loadedDirs.push("left");
-          if (hasTextures(Direction.Right)) loadedDirs.push("right");
-          if (hasTextures(Direction.Up)) loadedDirs.push("up");
-          if (hasTextures(Direction.Down)) loadedDirs.push("down");
-          onAtlasLoadChangeRef.current?.({ loadedDirs });
+        const grid = new LibraryGrid();
+        grid.addCellAt(0, 0);
+
+        let bakedShelf: Sprite | null = null;
+        let selectedCellKey: string | null = null;
+        const selectionOverlay = new Container();
+        worldContent.addChild(selectionOverlay);
+
+        let edgeErrors = 0;
+
+        const rebuildShelf = () => {
+          const occupied = new Set(
+            grid.getAllCells().map((c) => cellKey(c.gx, c.gy))
+          );
+          const shelfContainer = buildShelfContainer(
+            shelfTextures,
+            occupied,
+            metrics
+          );
+          edgeErrors = shelfContainer.edgeErrors;
+          const gb = grid.getBounds();
+          if (!gb) {
+            shelfContainer.destroy({ children: true });
+            if (bakedShelf) {
+              worldContent.removeChild(bakedShelf);
+              bakedShelf.texture?.destroy(true);
+              bakedShelf.destroy();
+              bakedShelf = null;
+            }
+            selectionOverlay.removeChildren();
+            edgeErrors = 0;
+            return;
+          }
+          const { sprite } = bakeShelf(
+            app!.renderer,
+            shelfContainer,
+            gb.minGX,
+            gb.minGY,
+            metrics
+          );
+          shelfContainer.destroy({ children: true });
+
+          if (bakedShelf) {
+            worldContent.removeChild(bakedShelf);
+            bakedShelf.texture?.destroy(true);
+            bakedShelf.destroy();
+          }
+          worldContent.addChild(sprite);
+          bakedShelf = sprite;
+          // Ensure selectionOverlay is on top
+          worldContent.removeChild(selectionOverlay);
+          worldContent.addChild(selectionOverlay);
+          // Update overlay with new bounds after rebuild
+          updateSelection();
         };
-        updateAtlasStatus();
 
-        const cellContainer = await createCellContainerTurntableFrames({
-          targetHeight: 300,
-        });
+        const handleAddCellFromMarker = (gx: number, gy: number) => {
+          if (!app || cancelled) return;
+          selectedCellKey = null; // Deselect before add
+          if (addCellAtRef.current?.(gx, gy)) {
+            // updateSelection() is already called by addCellAtRef.current
+          }
+        };
+
+        const handleRemoveCellFromMarker = (gx: number, gy: number) => {
+          if (!app || cancelled) return;
+          // Find cell at this position
+          let cellToRemove: { id: CellId; gx: number; gy: number } | null = null;
+          for (const cell of grid.getAllCells()) {
+            if (cell.gx === gx && cell.gy === gy) {
+              cellToRemove = cell;
+              break;
+            }
+          }
+          if (cellToRemove) {
+            if (selectedCellKey === cellToRemove.id) {
+              selectedCellKey = null; // Deselect if removing selected cell
+            }
+            if (removeCellRef.current?.(cellToRemove.id)) {
+              // updateSelection() is already called by removeCellRef.current
+            }
+          }
+        };
+
+        const updateSelection = () => {
+          const gb = grid.getBounds();
+          if (gb) {
+            updateSelectionOverlay(
+              selectionOverlay,
+              selectedCellKey,
+              grid,
+              metrics,
+              gb.minGX,
+              gb.minGY,
+              handleAddCellFromMarker,
+              handleRemoveCellFromMarker
+            );
+          } else {
+            selectionOverlay.removeChildren();
+          }
+        };
+
+        const getGridCoordsFromPointer = (
+          globalX: number,
+          globalY: number
+        ): { gx: number; gy: number } | null => {
+          if (!bakedShelf) return null;
+
+          // Convert global (stage) coordinates to worldContent local coordinates
+          const globalPoint = new Point(globalX, globalY);
+          const worldPoint = worldContent.toLocal(globalPoint);
+
+          // Get shelf sprite position (in worldContent coordinates)
+          const shelfX = bakedShelf.x;
+          const shelfY = bakedShelf.y;
+
+          // Calculate grid coordinates relative to shelf origin
+          const localX = worldPoint.x - shelfX;
+          const localY = worldPoint.y - shelfY;
+
+          const gx = Math.floor(localX / metrics.CELL_W);
+          const gy = Math.floor(localY / metrics.CELL_H);
+
+          // Check if point is within shelf bounds
+          const gb = grid.getBounds();
+          if (!gb) return null;
+
+          // Adjust for minGX/minGY offset (shelf sprite is positioned at minGX*CELL_W, minGY*CELL_H)
+          const adjustedGX = gx + gb.minGX;
+          const adjustedGY = gy + gb.minGY;
+
+          // Verify the cell exists in the grid bounds
+          if (
+            adjustedGX < gb.minGX ||
+            adjustedGX > gb.maxGX ||
+            adjustedGY < gb.minGY ||
+            adjustedGY > gb.maxGY
+          ) {
+            return null;
+          }
+
+          return { gx: adjustedGX, gy: adjustedGY };
+        };
+
+        rebuildShelf();
         if (cancelled || !app) return;
         if (containerRef.current !== container) return;
-
-        worldContent.addChild(cellContainer);
 
         const camera: CameraState = createInitialCamera();
+
+        addCellAtRef.current = (gx: number, gy: number): boolean => {
+          if (!app || cancelled) return false;
+          if (!grid.addCellAt(gx, gy)) return false;
+          const occupied = new Set(
+            grid.getAllCells().map((c) => cellKey(c.gx, c.gy))
+          );
+          for (const c of grid.getAllCells()) {
+            if (c.gx === gx && c.gy === gy) continue;
+            const dx = Math.abs(c.gx - gx);
+            const dy = Math.abs(c.gy - gy);
+            if (dx + dy !== 1) continue;
+            devAssertNeighborDirection(occupied, c.gx, c.gy, gx, gy);
+          }
+          rebuildShelf();
+          updateSelection();
+          return true;
+        };
+
+        getCellCountRef.current = (): number => grid.getCellCount();
+        getCellsRef.current = (): Array<{ id: CellId; gx: number; gy: number }> =>
+          grid.getAllCells();
+        removeCellRef.current = (id: CellId): boolean => {
+          if (!app || cancelled) return false;
+          if (selectedCellKey === id) {
+            selectedCellKey = null;
+          }
+          if (!grid.removeCell(id)) return false;
+          rebuildShelf();
+          updateSelection();
+          return true;
+        };
+        clearRef.current = (): void => {
+          if (!app || cancelled) return;
+          selectedCellKey = null;
+          grid.clear();
+          rebuildShelf();
+          updateSelection();
+        };
+        getEdgeErrorsRef.current = (): number => edgeErrors;
+
+        const getCurrentBounds = (): ContentBounds | null => {
+          const gridBounds = grid.getBounds();
+          if (!gridBounds) return null;
+          return getGridBounds(gridBounds, metrics.CELL_W, metrics.CELL_H);
+        };
+
+        // Helper to get center target from grid bounds
+        const getGridCenterTarget = (): { cx: number; cy: number } => {
+          const bounds = getCurrentBounds();
+          if (!bounds) {
+            // Fallback to single cell center if no cells
+            return getSingleCellCenterTarget(CONTENT_BOUNDS);
+          }
+          return {
+            cx: (bounds.minX + bounds.maxX) / 2,
+            cy: (bounds.minY + bounds.maxY) / 2,
+          };
+        };
+
         resetCameraRef.current = () => {
-          camera.cx = 0;
-          camera.cy = 0;
+          const centerTarget = getGridCenterTarget();
+          camera.cx = centerTarget.cx;
+          camera.cy = centerTarget.cy;
           camera.s = 1;
         };
 
         let lastDebugAt = 0;
         const springVelocity = { vx: 0, vy: 0 };
         const worldTransformOut = { x: 0, y: 0, scale: 1 };
+
         const onTick = (ticker: { deltaMS: number }) => {
           const sw = app!.screen.width;
           const sh = app!.screen.height;
 
           if (springBackActive && !isDragging) {
-            const targetCx =
-              (CONTENT_BOUNDS.minX + CONTENT_BOUNDS.maxX) / 2;
-            const targetCy =
-              (CONTENT_BOUNDS.minY + CONTENT_BOUNDS.maxY) / 2;
+            const centerTarget = getGridCenterTarget();
             const dt = ticker.deltaMS / 1000;
             const done = advanceSpring(
               camera,
               springVelocity,
-              targetCx,
-              targetCy,
+              centerTarget.cx,
+              centerTarget.cy,
               dt
             );
             if (done) {
-              camera.cx = targetCx;
-              camera.cy = targetCy;
+              camera.cx = centerTarget.cx;
+              camera.cy = centerTarget.cy;
               springVelocity.vx = 0;
               springVelocity.vy = 0;
               springBackActive = false;
@@ -225,18 +379,6 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           world.position.set(worldTransformOut.x, worldTransformOut.y);
           world.scale.set(worldTransformOut.scale);
 
-          const cellCenterScreen = worldToScreen(0, 0, camera, sw, sh);
-          const offsetX = cellCenterScreen.x - sw / 2;
-          const offsetY = cellCenterScreen.y - sh / 2;
-          const frameState = updateCellTurntableFrames(
-            cellContainer,
-            offsetX,
-            offsetY,
-            isDragging,
-            ticker.deltaMS,
-            atlasesReady && gpuPrewarmed
-          );
-
           const now = Date.now();
           if (now - lastDebugAt >= DEBUG_THROTTLE_MS) {
             lastDebugAt = now;
@@ -245,19 +387,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
               y: camera.cy,
               zoom: camera.s,
             });
-            if (frameState && onStretchDebugRef.current) {
-              onStretchDebugRef.current({
-                mag: frameState.mag,
-                t: frameState.t,
-                frameIndex: frameState.frameIndex,
-                dir: frameState.dir,
-                offsetX: frameState.offsetX,
-                offsetY: frameState.offsetY,
-                absX: frameState.absX,
-                absY: frameState.absY,
-                axis: frameState.axis,
-              });
-            }
+            onCellCountChangeRef.current?.(grid.getCellCount());
           }
         };
         app.ticker.add(onTick);
@@ -267,12 +397,16 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         let lastScreenY = 0;
         let pinchActive = false;
         let springBackActive = false;
+        let dragStartX = 0;
+        let dragStartY = 0;
 
         const onPointerDown = (e: FederatedPointerEvent) => {
           if (pinchActive) return;
           isDragging = true;
           lastScreenX = e.global.x;
           lastScreenY = e.global.y;
+          dragStartX = e.global.x;
+          dragStartY = e.global.y;
         };
         const onGlobalMove = (e: FederatedPointerEvent) => {
           if (pinchActive || !isDragging) return;
@@ -286,10 +420,44 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
             dy,
             screenW(),
             screenH(),
-            getSingleCellCenterTarget(CONTENT_BOUNDS)
+            getGridCenterTarget()
           );
         };
-        const onPointerUp = () => {
+        const onPointerUp = (e: FederatedPointerEvent) => {
+          if (isDragging) {
+            // Check if this was a tap (not a drag)
+            const dragDist = Math.hypot(
+              e.global.x - dragStartX,
+              e.global.y - dragStartY
+            );
+            if (dragDist < 5) {
+              // It's a tap, handle cell selection
+              const gridCoords = getGridCoordsFromPointer(e.global.x, e.global.y);
+              if (gridCoords) {
+                // Find clicked cell by checking all cells
+                let clickedCell: { id: CellId; gx: number; gy: number } | null = null;
+                for (const cell of grid.getAllCells()) {
+                  if (cell.gx === gridCoords.gx && cell.gy === gridCoords.gy) {
+                    clickedCell = cell;
+                    break;
+                  }
+                }
+
+                if (clickedCell) {
+                  // Clicked on occupied cell
+                  if (selectedCellKey === clickedCell.id) {
+                    // Deselect
+                    selectedCellKey = null;
+                  } else {
+                    // Select
+                    selectedCellKey = clickedCell.id;
+                  }
+                  // Update overlay
+                  updateSelection();
+                }
+              }
+            }
+          }
           isDragging = false;
           springBackActive = true;
         };
@@ -366,6 +534,56 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         });
         container.addEventListener("touchend", onTouchEnd, { passive: true });
 
+        const onKeyDown = (e: KeyboardEvent) => {
+          if (!selectedCellKey) return; // Ignore if no selection
+
+          const selectedCell = grid.getCell(selectedCellKey);
+          if (!selectedCell) return;
+
+          let targetGX = selectedCell.gx;
+          let targetGY = selectedCell.gy;
+
+          if (e.key === "ArrowUp") {
+            targetGY -= 1;
+          } else if (e.key === "ArrowDown") {
+            targetGY += 1;
+          } else if (e.key === "ArrowLeft") {
+            targetGX -= 1;
+          } else if (e.key === "ArrowRight") {
+            targetGX += 1;
+          } else if (e.key === "Escape") {
+            selectedCellKey = null;
+            updateSelection();
+            return;
+          } else {
+            return; // Ignore other keys
+          }
+
+          e.preventDefault(); // Prevent browser scroll
+
+          // Toggle: if neighbor exists -> remove, if not -> add
+          if (grid.isOccupied(targetGX, targetGY)) {
+            // Find cell ID for removal
+            let cellToRemove: { id: CellId; gx: number; gy: number } | null =
+              null;
+            for (const cell of grid.getAllCells()) {
+              if (cell.gx === targetGX && cell.gy === targetGY) {
+                cellToRemove = cell;
+                break;
+              }
+            }
+            if (cellToRemove && removeCellRef.current) {
+              removeCellRef.current(cellToRemove.id);
+            }
+          } else {
+            // Add new cell
+            if (addCellAtRef.current) {
+              addCellAtRef.current(targetGX, targetGY);
+            }
+          }
+        };
+        window.addEventListener("keydown", onKeyDown);
+
         teardown = () => {
           app!.ticker.remove(onTick);
           app!.stage.off("pointerdown", onPointerDown);
@@ -376,6 +594,14 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           container.removeEventListener("touchstart", onTouchStart);
           container.removeEventListener("touchmove", onTouchMove);
           container.removeEventListener("touchend", onTouchEnd);
+          window.removeEventListener("keydown", onKeyDown);
+          if (bakedShelf) {
+            worldContent.removeChild(bakedShelf);
+            bakedShelf.texture?.destroy(true);
+            bakedShelf.destroy();
+            bakedShelf = null;
+          }
+          selectionOverlay.removeChildren();
         };
       })();
 
@@ -383,8 +609,13 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         cancelled = true;
         initOnceRef.current = false;
         resetCameraRef.current = null;
+        addCellAtRef.current = null;
+        getCellCountRef.current = null;
+        getCellsRef.current = null;
+        removeCellRef.current = null;
+        clearRef.current = null;
+        getEdgeErrorsRef.current = null;
         teardown?.();
-        unloadAllTextures();
         app?.destroy({ removeView: true }, { children: true });
         app = null;
       };
