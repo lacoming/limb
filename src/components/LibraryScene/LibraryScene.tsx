@@ -27,6 +27,7 @@ import { updateSelectionOverlay } from "./cellSelection";
 
 const DEBUG_THROTTLE_MS = 250;
 const BG = 0x1a1a1a;
+const DEV_GRID_LOG = false;
 
 export interface LibrarySceneRef {
   resetCamera: () => void;
@@ -39,6 +40,7 @@ export interface LibrarySceneRef {
 }
 
 export interface LibrarySceneProps {
+  mode?: 'edit' | 'view';
   onCameraChange?: (data: {
     x: number;
     y: number;
@@ -48,10 +50,14 @@ export interface LibrarySceneProps {
 }
 
 export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
-  function LibraryScene({ onCameraChange, onCellCountChange }, ref) {
+  function LibraryScene({ mode = 'edit', onCameraChange, onCellCountChange }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
+    const modeRef = useRef(mode);
     const onCameraChangeRef = useRef(onCameraChange);
     const onCellCountChangeRef = useRef(onCellCountChange);
+    useEffect(() => {
+      modeRef.current = mode;
+    }, [mode]);
     useEffect(() => {
       onCameraChangeRef.current = onCameraChange;
       onCellCountChangeRef.current = onCellCountChange;
@@ -190,6 +196,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
 
         const handleAddCellFromMarker = (gx: number, gy: number) => {
           if (!app || cancelled) return;
+          if (modeRef.current !== 'edit') return; // Only in edit mode
           selectedCellKey = null; // Deselect before add
           if (addCellAtRef.current?.(gx, gy)) {
             // updateSelection() is already called by addCellAtRef.current
@@ -198,6 +205,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
 
         const handleRemoveCellFromMarker = (gx: number, gy: number) => {
           if (!app || cancelled) return;
+          if (modeRef.current !== 'edit') return; // Only in edit mode
           // Find cell at this position
           let cellToRemove: { id: CellId; gx: number; gy: number } | null = null;
           for (const cell of grid.getAllCells()) {
@@ -224,8 +232,8 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
               selectedCellKey,
               grid,
               metrics,
-              gb.minGX,
-              gb.minGY,
+              0,
+              0,
               handleAddCellFromMarker,
               handleRemoveCellFromMarker
             );
@@ -239,41 +247,21 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           globalY: number
         ): { gx: number; gy: number } | null => {
           if (!bakedShelf) return null;
-
-          // Convert global (stage) coordinates to worldContent local coordinates
-          const globalPoint = new Point(globalX, globalY);
-          const worldPoint = worldContent.toLocal(globalPoint);
-
-          // Get shelf sprite position (in worldContent coordinates)
-          const shelfX = bakedShelf.x;
-          const shelfY = bakedShelf.y;
-
-          // Calculate grid coordinates relative to shelf origin
-          const localX = worldPoint.x - shelfX;
-          const localY = worldPoint.y - shelfY;
-
-          const gx = Math.floor(localX / metrics.CELL_W);
-          const gy = Math.floor(localY / metrics.CELL_H);
-
-          // Check if point is within shelf bounds
           const gb = grid.getBounds();
           if (!gb) return null;
 
-          // Adjust for minGX/minGY offset (shelf sprite is positioned at minGX*CELL_W, minGY*CELL_H)
-          const adjustedGX = gx + gb.minGX;
-          const adjustedGY = gy + gb.minGY;
+          // Single source of truth: coords in shelf sprite space (same as bake)
+          const globalPoint = new Point(globalX, globalY);
+          const local = bakedShelf.toLocal(globalPoint);
+          const gridOriginX = 0;
+          const gridOriginY = 0;
+          const gx = gb.minGX + Math.floor((local.x - gridOriginX) / metrics.CELL_W);
+          const gy = gb.minGY + Math.floor((local.y - gridOriginY) / metrics.CELL_H);
 
-          // Verify the cell exists in the grid bounds
-          if (
-            adjustedGX < gb.minGX ||
-            adjustedGX > gb.maxGX ||
-            adjustedGY < gb.minGY ||
-            adjustedGY > gb.maxGY
-          ) {
-            return null;
+          if (process.env.NODE_ENV === "development" && DEV_GRID_LOG) {
+            console.log("[grid] tap", { localX: local.x, localY: local.y, gx, gy });
           }
-
-          return { gx: adjustedGX, gy: adjustedGY };
+          return { gx, gy };
         };
 
         rebuildShelf();
@@ -399,6 +387,10 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         let springBackActive = false;
         let dragStartX = 0;
         let dragStartY = 0;
+        let lastTapTime = 0;
+        let lastTapPos = { x: 0, y: 0 };
+        const DOUBLE_TAP_MS = 300;
+        const DOUBLE_TAP_PX = 24;
 
         const onPointerDown = (e: FederatedPointerEvent) => {
           if (pinchActive) return;
@@ -425,37 +417,70 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         };
         const onPointerUp = (e: FederatedPointerEvent) => {
           if (isDragging) {
-            // Check if this was a tap (not a drag)
             const dragDist = Math.hypot(
               e.global.x - dragStartX,
               e.global.y - dragStartY
             );
             if (dragDist < 5) {
-              // It's a tap, handle cell selection
               const gridCoords = getGridCoordsFromPointer(e.global.x, e.global.y);
-              if (gridCoords) {
-                // Find clicked cell by checking all cells
-                let clickedCell: { id: CellId; gx: number; gy: number } | null = null;
-                for (const cell of grid.getAllCells()) {
-                  if (cell.gx === gridCoords.gx && cell.gy === gridCoords.gy) {
-                    clickedCell = cell;
-                    break;
+              const now = Date.now();
+              const isDoubleTap =
+                gridCoords &&
+                now - lastTapTime <= DOUBLE_TAP_MS &&
+                Math.hypot(
+                  e.global.x - lastTapPos.x,
+                  e.global.y - lastTapPos.y
+                ) <= DOUBLE_TAP_PX;
+
+              if (isDoubleTap && gridCoords) {
+                e.stopPropagation();
+                e.preventDefault?.();
+                // Double tap toggle only works in edit mode
+                if (modeRef.current === 'edit') {
+                  if (grid.isOccupied(gridCoords.gx, gridCoords.gy)) {
+                    let cellToRemove: { id: CellId; gx: number; gy: number } | null = null;
+                    for (const cell of grid.getAllCells()) {
+                      if (cell.gx === gridCoords.gx && cell.gy === gridCoords.gy) {
+                        cellToRemove = cell;
+                        break;
+                      }
+                    }
+                    if (cellToRemove && removeCellRef.current) {
+                      removeCellRef.current(cellToRemove.id);
+                    }
+                  } else if (addCellAtRef.current) {
+                    addCellAtRef.current(gridCoords.gx, gridCoords.gy);
                   }
                 }
-
-                if (clickedCell) {
-                  // Clicked on occupied cell
-                  if (selectedCellKey === clickedCell.id) {
-                    // Deselect
-                    selectedCellKey = null;
-                  } else {
-                    // Select
-                    selectedCellKey = clickedCell.id;
+              } else if (gridCoords) {
+                const gb = grid.getBounds();
+                const inBounds =
+                  gb &&
+                  gridCoords.gx >= gb.minGX &&
+                  gridCoords.gx <= gb.maxGX &&
+                  gridCoords.gy >= gb.minGY &&
+                  gridCoords.gy <= gb.maxGY &&
+                  grid.isOccupied(gridCoords.gx, gridCoords.gy);
+                if (inBounds) {
+                  let clickedCell: { id: CellId; gx: number; gy: number } | null = null;
+                  for (const cell of grid.getAllCells()) {
+                    if (cell.gx === gridCoords.gx && cell.gy === gridCoords.gy) {
+                      clickedCell = cell;
+                      break;
+                    }
                   }
-                  // Update overlay
-                  updateSelection();
+                  if (clickedCell) {
+                    if (selectedCellKey === clickedCell.id) {
+                      selectedCellKey = null;
+                    } else {
+                      selectedCellKey = clickedCell.id;
+                    }
+                    updateSelection();
+                  }
                 }
               }
+              lastTapTime = now;
+              lastTapPos = { x: e.global.x, y: e.global.y };
             }
           }
           isDragging = false;
@@ -561,24 +586,27 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
 
           e.preventDefault(); // Prevent browser scroll
 
-          // Toggle: if neighbor exists -> remove, if not -> add
-          if (grid.isOccupied(targetGX, targetGY)) {
-            // Find cell ID for removal
-            let cellToRemove: { id: CellId; gx: number; gy: number } | null =
-              null;
-            for (const cell of grid.getAllCells()) {
-              if (cell.gx === targetGX && cell.gy === targetGY) {
-                cellToRemove = cell;
-                break;
+          // Arrow key add/remove only works in edit mode
+          if (modeRef.current === 'edit') {
+            // Toggle: if neighbor exists -> remove, if not -> add
+            if (grid.isOccupied(targetGX, targetGY)) {
+              // Find cell ID for removal
+              let cellToRemove: { id: CellId; gx: number; gy: number } | null =
+                null;
+              for (const cell of grid.getAllCells()) {
+                if (cell.gx === targetGX && cell.gy === targetGY) {
+                  cellToRemove = cell;
+                  break;
+                }
               }
-            }
-            if (cellToRemove && removeCellRef.current) {
-              removeCellRef.current(cellToRemove.id);
-            }
-          } else {
-            // Add new cell
-            if (addCellAtRef.current) {
-              addCellAtRef.current(targetGX, targetGY);
+              if (cellToRemove && removeCellRef.current) {
+                removeCellRef.current(cellToRemove.id);
+              }
+            } else {
+              // Add new cell
+              if (addCellAtRef.current) {
+                addCellAtRef.current(targetGX, targetGY);
+              }
             }
           }
         };

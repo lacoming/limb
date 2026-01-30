@@ -13,14 +13,29 @@ const ADD_HINT_COLOR = 0x4ade80; // green
 const REMOVE_HINT_COLOR = 0xef4444; // red
 const HINT_ALPHA = 0.4;
 const HINT_SIZE = 20;
+const DEV_OVERLAY_LOG = false;
+
+function cellToLocal(
+  gx: number,
+  gy: number,
+  gridOriginX: number,
+  gridOriginY: number,
+  CELL_W: number,
+  CELL_H: number
+): { x: number; y: number } {
+  return {
+    x: gridOriginX + gx * CELL_W,
+    y: gridOriginY + gy * CELL_H,
+  };
+}
 
 export function updateSelectionOverlay(
   overlay: Container,
   selectedKey: string | null,
   grid: LibraryGrid,
   metrics: ShelfMetrics,
-  minGX: number,
-  minGY: number,
+  gridOriginX: number,
+  gridOriginY: number,
   onAddCell?: (gx: number, gy: number) => void,
   onRemoveCell?: (gx: number, gy: number) => void
 ): void {
@@ -33,10 +48,28 @@ export function updateSelectionOverlay(
 
   const { CELL_W, CELL_H } = metrics;
 
+  const sel = cellToLocal(
+    selectedCell.gx,
+    selectedCell.gy,
+    gridOriginX,
+    gridOriginY,
+    CELL_W,
+    CELL_H
+  );
+  const selX = sel.x;
+  const selY = sel.y;
+
+  if (process.env.NODE_ENV === "development" && DEV_OVERLAY_LOG) {
+    console.log("[overlay] selected", {
+      gx: selectedCell.gx,
+      gy: selectedCell.gy,
+      localX: selX,
+      localY: selY,
+    });
+  }
+
   // Draw selection highlight
   const selectionG = new Graphics();
-  const selX = (selectedCell.gx - minGX) * CELL_W;
-  const selY = (selectedCell.gy - minGY) * CELL_H;
   selectionG.rect(selX, selY, CELL_W, CELL_H);
   selectionG.fill({ color: SELECTION_COLOR, alpha: SELECTION_ALPHA });
   overlay.addChild(selectionG);
@@ -51,8 +84,16 @@ export function updateSelectionOverlay(
 
   for (const neighbor of neighbors) {
     const isOccupied = grid.isOccupied(neighbor.gx, neighbor.gy);
-    const nx = (neighbor.gx - minGX) * CELL_W;
-    const ny = (neighbor.gy - minGY) * CELL_H;
+    const n = cellToLocal(
+      neighbor.gx,
+      neighbor.gy,
+      gridOriginX,
+      gridOriginY,
+      CELL_W,
+      CELL_H
+    );
+    const nx = n.x;
+    const ny = n.y;
     const centerX = nx + CELL_W / 2;
     const centerY = ny + CELL_H / 2;
 

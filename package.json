@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "bash -c '. ~/.nvm/nvm.sh 2>/dev/null && nvm use 20; NODE_ENV=development next dev -H 192.168.0.112'",
-    "dev:webpack": "bash -c '. ~/.nvm/nvm.sh 2>/dev/null && nvm use 20; NODE_ENV=development next dev --webpack -H 192.168.0.112'",
+    "dev": "bash -c '. ~/.nvm/nvm.sh 2>/dev/null && nvm use 20; NODE_ENV=development next dev -H 0.0.0.0'",
+    "dev:mobile": "bash -c '. ~/.nvm/nvm.sh 2>/dev/null && nvm use 20; NODE_ENV=development next dev -H 0.0.0.0 -p 3001'",
+    "dev:webpack": "bash -c '. ~/.nvm/nvm.sh 2>/dev/null && nvm use 20; NODE_ENV=development next dev --webpack -H 0.0.0.0'",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

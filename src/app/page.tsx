@@ -1,17 +1,19 @@
 "use client";
 
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { DebugCellsPanel } from "@/components/DebugCellsPanel";
 import { LibraryScene, type LibrarySceneRef } from "@/components/LibraryScene";
 
 export default function Home() {
   const sceneRef = useRef<LibrarySceneRef>(null);
+  const [mode, setMode] = useState<'edit' | 'view'>('edit');
   const [camX, setCamX] = useState(0);
   const [camY, setCamY] = useState(0);
   const [camZoom, setCamZoom] = useState(1);
   const [cellCount, setCellCount] = useState(0);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [debugDirty, setDebugDirty] = useState(0);
+  const [controlsExpanded, setControlsExpanded] = useState(true);
 
   const handleCameraChange = useCallback(
     (data: { x: number; y: number; zoom: number }) => {
@@ -39,11 +41,24 @@ export default function Home() {
     }
   }, [showToast]);
 
+  // Keyboard shortcut for mode toggle (E key)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'e' || e.key === 'E') {
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+        setMode(m => m === 'edit' ? 'view' : 'edit');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
     <div className="fixed inset-0 w-screen h-screen overflow-hidden bg-zinc-900">
       <div className="absolute inset-0">
         <LibraryScene
           ref={sceneRef}
+          mode={mode}
           onCameraChange={handleCameraChange}
           onCellCountChange={handleCellCountChange}
         />
@@ -57,6 +72,31 @@ export default function Home() {
           <span className="tabular-nums text-xs">
             Cells: {cellCount}
           </span>
+          {/* Mode toggle */}
+          <div className="flex gap-1 bg-black/40 rounded p-1">
+            <button
+              type="button"
+              onClick={() => setMode('edit')}
+              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                mode === 'edit' 
+                  ? 'bg-blue-500 text-white' 
+                  : 'bg-transparent text-white/60 hover:text-white/80'
+              }`}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('view')}
+              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                mode === 'view' 
+                  ? 'bg-gray-500 text-white' 
+                  : 'bg-transparent text-white/60 hover:text-white/80'
+              }`}
+            >
+              View
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => sceneRef.current?.resetCamera()}
@@ -102,6 +142,47 @@ export default function Home() {
           >
             +↓
           </button>
+        </div>
+
+        {/* Controls Help Panel */}
+        <div className="rounded bg-black/60 text-white text-xs overflow-hidden max-w-xs">
+          <button
+            type="button"
+            onClick={() => setControlsExpanded(!controlsExpanded)}
+            className="w-full px-3 py-2 text-left font-medium border-b border-white/20 hover:bg-white/10 flex items-center justify-between"
+          >
+            <span>Controls</span>
+            <span className="text-white/60">{controlsExpanded ? '▼' : '▶'}</span>
+          </button>
+          {controlsExpanded && (
+            <div className="px-3 py-2 space-y-2">
+              {mode === 'view' && (
+                <div className="text-yellow-400 font-medium mb-2">
+                  ⚠ Editing disabled (View mode)
+                </div>
+              )}
+              <div>
+                <div className="text-white/80 font-medium mb-1">Desktop:</div>
+                <ul className="space-y-0.5 text-white/70">
+                  <li>• Click: Select cell</li>
+                  {mode === 'edit' && <li>• Arrows: Add/remove neighbors</li>}
+                  <li>• Esc: Unselect</li>
+                  <li>• Wheel: Zoom</li>
+                  <li>• Drag: Pan</li>
+                  <li>• E: Toggle Edit/View</li>
+                </ul>
+              </div>
+              <div>
+                <div className="text-white/80 font-medium mb-1">Mobile:</div>
+                <ul className="space-y-0.5 text-white/70">
+                  <li>• Tap: Select cell</li>
+                  {mode === 'edit' && <li>• Double-tap: Toggle cell</li>}
+                  <li>• Pinch: Zoom</li>
+                  <li>• Drag: Pan</li>
+                </ul>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
