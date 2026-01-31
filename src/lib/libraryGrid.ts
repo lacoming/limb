@@ -2,7 +2,7 @@
  * Grid-based library cell management.
  * Stores cells in a grid coordinate system (gx, gy) with efficient lookup.
  */
-import { cellKey } from "./cellKeys";
+import { cellKey, parseCellKey } from "./cellKeys";
 
 export type CellId = string;
 
@@ -147,5 +147,17 @@ export class LibraryGrid {
   clear(): void {
     this.cellsById.clear();
     this.occupancy.clear();
+  }
+
+  /**
+   * Replaces grid with cells at the given keys ("gx,gy").
+   * Used for undo/redo; cell IDs are regenerated.
+   */
+  setFromCellKeys(keys: Set<string>): void {
+    this.clear();
+    for (const key of keys) {
+      const { gx, gy } = parseCellKey(key);
+      this.addCellAt(gx, gy);
+    }
   }
 }

@@ -12,6 +12,8 @@ export default function Home() {
   const [camZoom, setCamZoom] = useState(1);
   const [cellCount, setCellCount] = useState(0);
   const [multiSelectedCount, setMultiSelectedCount] = useState(0);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [debugDirty, setDebugDirty] = useState(0);
   const [controlsExpanded, setControlsExpanded] = useState(true);
@@ -31,6 +33,11 @@ export default function Home() {
 
   const handleMultiSelectionChange = useCallback((count: number) => {
     setMultiSelectedCount(count);
+  }, []);
+
+  const handleHistoryChange = useCallback((undo: boolean, redo: boolean) => {
+    setCanUndo(undo);
+    setCanRedo(redo);
   }, []);
 
   const showToast = useCallback((message: string) => {
@@ -67,6 +74,7 @@ export default function Home() {
           onCameraChange={handleCameraChange}
           onCellCountChange={handleCellCountChange}
           onMultiSelectionChange={handleMultiSelectionChange}
+          onHistoryChange={handleHistoryChange}
         />
       </div>
       <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between gap-4 px-4 py-3 bg-black/40 text-white text-sm">
@@ -90,6 +98,24 @@ export default function Home() {
             className="px-3 py-1.5 rounded bg-red-500/60 hover:bg-red-500/80 disabled:opacity-50 disabled:pointer-events-none text-sm"
           >
             Remove Selected
+          </button>
+          <button
+            type="button"
+            onClick={() => sceneRef.current?.undo()}
+            disabled={!canUndo || mode === "view"}
+            className="px-3 py-1.5 rounded bg-white/20 hover:bg-white/30 disabled:opacity-50 disabled:pointer-events-none text-sm"
+            title="Undo"
+          >
+            Undo
+          </button>
+          <button
+            type="button"
+            onClick={() => sceneRef.current?.redo()}
+            disabled={!canRedo || mode === "view"}
+            className="px-3 py-1.5 rounded bg-white/20 hover:bg-white/30 disabled:opacity-50 disabled:pointer-events-none text-sm"
+            title="Redo"
+          >
+            Redo
           </button>
           {/* Mode toggle */}
           <div className="flex gap-1 bg-black/40 rounded p-1">
@@ -193,6 +219,13 @@ export default function Home() {
                     <li>• Arrows: Add/remove neighbors</li>
                   )}
                   <li>• Esc: Unselect</li>
+                  {mode === "edit" && (
+                    <>
+                      <li>• Cmd+Z (Ctrl+Z): Undo</li>
+                      <li>• Cmd+Shift+Z (Ctrl+Shift+Z): Redo</li>
+                      <li>• Ctrl+Y: Redo (Win)</li>
+                    </>
+                  )}
                   <li>• Wheel: Zoom</li>
                   <li>• Drag: Pan</li>
                   <li>• E: Toggle Edit/View</li>

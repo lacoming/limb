@@ -14,7 +14,11 @@ import {
   type CameraState,
   type ContentBounds,
 } from "./camera";
-import { cellKey, devAssertNeighborDirection } from "../../lib/cellKeys";
+import {
+  cellKey,
+  devAssertNeighborDirection,
+  parseCellKey,
+} from "../../lib/cellKeys";
 import {
   LibraryGrid,
   type CellId,
@@ -28,6 +32,14 @@ import { updateSelectionOverlay, type MarqueeRect } from "./cellSelection";
 const DEBUG_THROTTLE_MS = 250;
 const BG = 0x1a1a1a;
 const DEV_GRID_LOG = false;
+const MAX_HISTORY = 100;
+
+type HistoryAction = {
+  type: "add" | "remove" | "batch" | "clear";
+  before: Set<string>;
+  after: Set<string>;
+  meta?: string;
+};
 
 export interface LibrarySceneRef {
   resetCamera: () => void;
@@ -38,10 +50,14 @@ export interface LibrarySceneRef {
   removeSelectedCells: () => void;
   clear: () => void;
   getEdgeErrors: () => number;
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
 }
 
 export interface LibrarySceneProps {
-  mode?: 'edit' | 'view';
+  mode?: "edit" | "view";
   onCameraChange?: (data: {
     x: number;
     y: number;
@@ -49,15 +65,26 @@ export interface LibrarySceneProps {
   }) => void;
   onCellCountChange?: (count: number) => void;
   onMultiSelectionChange?: (count: number) => void;
+  onHistoryChange?: (canUndo: boolean, canRedo: boolean) => void;
 }
 
 export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
-  function LibraryScene({ mode = 'edit', onCameraChange, onCellCountChange, onMultiSelectionChange }, ref) {
+  function LibraryScene(
+    {
+      mode = "edit",
+      onCameraChange,
+      onCellCountChange,
+      onMultiSelectionChange,
+      onHistoryChange,
+    },
+    ref
+  ) {
     const containerRef = useRef<HTMLDivElement>(null);
     const modeRef = useRef(mode);
     const onCameraChangeRef = useRef(onCameraChange);
     const onCellCountChangeRef = useRef(onCellCountChange);
     const onMultiSelectionChangeRef = useRef(onMultiSelectionChange);
+    const onHistoryChangeRef = useRef(onHistoryChange);
     useEffect(() => {
       modeRef.current = mode;
     }, [mode]);
@@ -65,7 +92,8 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
       onCameraChangeRef.current = onCameraChange;
       onCellCountChangeRef.current = onCellCountChange;
       onMultiSelectionChangeRef.current = onMultiSelectionChange;
-    }, [onCameraChange, onCellCountChange, onMultiSelectionChange]);
+      onHistoryChangeRef.current = onHistoryChange;
+    }, [onCameraChange, onCellCountChange, onMultiSelectionChange, onHistoryChange]);
 
     useImperativeHandle(
       ref,
@@ -94,6 +122,18 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         getEdgeErrors() {
           return getEdgeErrorsRef.current?.() ?? 0;
         },
+        undo() {
+          undoRef.current?.();
+        },
+        redo() {
+          redoRef.current?.();
+        },
+        canUndo() {
+          return canUndoRef.current?.() ?? false;
+        },
+        canRedo() {
+          return canRedoRef.current?.() ?? false;
+        },
       }),
       []
     );
@@ -108,6 +148,10 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
     const removeSelectedCellsRef = useRef<(() => void) | null>(null);
     const clearRef = useRef<(() => void) | null>(null);
     const getEdgeErrorsRef = useRef<(() => number) | null>(null);
+    const undoRef = useRef<(() => void) | null>(null);
+    const redoRef = useRef<(() => void) | null>(null);
+    const canUndoRef = useRef<() => boolean>(() => false);
+    const canRedoRef = useRef<() => boolean>(() => false);
     const initOnceRef = useRef(false);
 
     useEffect(() => {
@@ -160,6 +204,54 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
 
         const notifyMultiSelectionChange = () => {
           onMultiSelectionChangeRef.current?.(multiSelectedCells.size);
+        };
+
+        const undoStack: HistoryAction[] = [];
+        let redoStack: HistoryAction[] = [];
+
+        const getOccupiedKeys = (): Set<string> =>
+          new Set(grid.getAllCells().map((c) => cellKey(c.gx, c.gy)));
+
+        const notifyHistoryChange = () => {
+          onHistoryChangeRef.current?.(
+            undoStack.length > 0,
+            redoStack.length > 0
+          );
+        };
+
+        const pushHistory = (
+          before: Set<string>,
+          after: Set<string>,
+          type: HistoryAction["type"],
+          meta?: string
+        ) => {
+          if (
+            before.size === after.size &&
+            [...before].every((k) => after.has(k))
+          )
+            return;
+          redoStack = [];
+          undoStack.push({
+            type,
+            before: new Set(before),
+            after: new Set(after),
+            meta,
+          });
+          if (undoStack.length > MAX_HISTORY) undoStack.shift();
+          notifyHistoryChange();
+        };
+
+        const commitOccupancy = (
+          next: Set<string>,
+          type: HistoryAction["type"],
+          meta?: string
+        ) => {
+          const before = getOccupiedKeys();
+          grid.setFromCellKeys(next);
+          pushHistory(before, next, type, meta);
+          rebuildShelf();
+          updateSelection();
+          sanitizeSelection();
         };
 
         let edgeErrors = 0;
@@ -268,6 +360,19 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           }
         };
 
+        const sanitizeSelection = () => {
+          if (selectedCellKey && !grid.getCell(selectedCellKey)) {
+            selectedCellKey = null;
+          }
+          for (const key of Array.from(multiSelectedCells)) {
+            const { gx, gy } = parseCellKey(key);
+            if (!grid.isOccupied(gx, gy)) {
+              multiSelectedCells.delete(key);
+            }
+          }
+          notifyMultiSelectionChange();
+        };
+
         const getGridCoordsFromPointer = (
           globalX: number,
           globalY: number
@@ -298,19 +403,18 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
 
         addCellAtRef.current = (gx: number, gy: number): boolean => {
           if (!app || cancelled) return false;
-          if (!grid.addCellAt(gx, gy)) return false;
-          const occupied = new Set(
-            grid.getAllCells().map((c) => cellKey(c.gx, c.gy))
-          );
+          const next = new Set(getOccupiedKeys());
+          const key = cellKey(gx, gy);
+          if (next.has(key)) return false;
+          next.add(key);
           for (const c of grid.getAllCells()) {
             if (c.gx === gx && c.gy === gy) continue;
             const dx = Math.abs(c.gx - gx);
             const dy = Math.abs(c.gy - gy);
             if (dx + dy !== 1) continue;
-            devAssertNeighborDirection(occupied, c.gx, c.gy, gx, gy);
+            devAssertNeighborDirection(next, c.gx, c.gy, gx, gy);
           }
-          rebuildShelf();
-          updateSelection();
+          commitOccupancy(next, "add");
           return true;
         };
 
@@ -319,12 +423,12 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           grid.getAllCells();
         removeCellRef.current = (id: CellId): boolean => {
           if (!app || cancelled) return false;
-          if (selectedCellKey === id) {
-            selectedCellKey = null;
-          }
-          if (!grid.removeCell(id)) return false;
-          rebuildShelf();
-          updateSelection();
+          const cell = grid.getCell(id);
+          if (!cell) return false;
+          if (selectedCellKey === id) selectedCellKey = null;
+          const next = new Set(getOccupiedKeys());
+          next.delete(cellKey(cell.gx, cell.gy));
+          commitOccupancy(next, "remove");
           return true;
         };
         removeSelectedCellsRef.current = (): void => {
@@ -336,35 +440,69 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
                 idsToRemove.push(cell.id);
               }
             }
-            for (const id of idsToRemove) {
-              grid.removeCell(id);
-            }
-            if (
-              selectedCellKey &&
-              idsToRemove.includes(selectedCellKey)
-            ) {
+            if (selectedCellKey && idsToRemove.includes(selectedCellKey)) {
               selectedCellKey = null;
             }
             multiSelectedCells.clear();
-            rebuildShelf();
-            updateSelection();
+            const next = new Set(getOccupiedKeys());
+            for (const id of idsToRemove) {
+              const c = grid.getCell(id);
+              if (c) next.delete(cellKey(c.gx, c.gy));
+            }
+            commitOccupancy(
+              next,
+              "batch",
+              idsToRemove.length > 0
+                ? `Removed ${idsToRemove.length} cells`
+                : undefined
+            );
             notifyMultiSelectionChange();
           } else if (selectedCellKey) {
-            grid.removeCell(selectedCellKey);
-            selectedCellKey = null;
-            rebuildShelf();
-            updateSelection();
+            const cell = grid.getCell(selectedCellKey);
+            if (cell) {
+              selectedCellKey = null;
+              const next = new Set(getOccupiedKeys());
+              next.delete(cellKey(cell.gx, cell.gy));
+              commitOccupancy(next, "remove");
+            }
           }
         };
         clearRef.current = (): void => {
           if (!app || cancelled) return;
           selectedCellKey = null;
           multiSelectedCells.clear();
-          grid.clear();
-          rebuildShelf();
-          updateSelection();
+          commitOccupancy(new Set(), "clear");
           notifyMultiSelectionChange();
         };
+
+        const undo = (): void => {
+          if (modeRef.current !== "edit" || undoStack.length === 0) return;
+          const action = undoStack.pop()!;
+          redoStack.push(action);
+          grid.setFromCellKeys(new Set(action.before));
+          rebuildShelf();
+          updateSelection();
+          sanitizeSelection();
+          notifyHistoryChange();
+        };
+
+        const redo = (): void => {
+          if (modeRef.current !== "edit" || redoStack.length === 0) return;
+          const action = redoStack.pop()!;
+          undoStack.push(action);
+          grid.setFromCellKeys(new Set(action.after));
+          rebuildShelf();
+          updateSelection();
+          sanitizeSelection();
+          notifyHistoryChange();
+        };
+
+        undoRef.current = undo;
+        redoRef.current = redo;
+        canUndoRef.current = () => undoStack.length > 0;
+        canRedoRef.current = () => redoStack.length > 0;
+        notifyHistoryChange();
+
         getEdgeErrorsRef.current = (): number => edgeErrors;
 
         const getCurrentBounds = (): ContentBounds | null => {
@@ -738,35 +876,28 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
             return;
           }
 
+          if (modeRef.current === "edit") {
+            if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
+              undo();
+              e.preventDefault();
+              return;
+            }
+            if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey) {
+              redo();
+              e.preventDefault();
+              return;
+            }
+            if (e.ctrlKey && e.key === "y") {
+              redo();
+              e.preventDefault();
+              return;
+            }
+          }
+
           if (e.key === "Delete" || e.key === "Backspace") {
             if (modeRef.current !== "edit") return;
             e.preventDefault();
-            if (multiSelectedCells.size > 0) {
-              const idsToRemove: CellId[] = [];
-              for (const cell of grid.getAllCells()) {
-                if (multiSelectedCells.has(cellKey(cell.gx, cell.gy))) {
-                  idsToRemove.push(cell.id);
-                }
-              }
-              for (const id of idsToRemove) {
-                grid.removeCell(id);
-              }
-              if (selectedCellKey && idsToRemove.includes(selectedCellKey)) {
-                selectedCellKey = null;
-              }
-              multiSelectedCells.clear();
-              rebuildShelf();
-              updateSelection();
-              notifyMultiSelectionChange();
-              return;
-            }
-            if (selectedCellKey) {
-              grid.removeCell(selectedCellKey);
-              selectedCellKey = null;
-              rebuildShelf();
-              updateSelection();
-              return;
-            }
+            removeSelectedCellsRef.current?.();
             return;
           }
 
@@ -843,6 +974,10 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         removeSelectedCellsRef.current = null;
         clearRef.current = null;
         getEdgeErrorsRef.current = null;
+        undoRef.current = null;
+        redoRef.current = null;
+        canUndoRef.current = () => false;
+        canRedoRef.current = () => false;
         teardown?.();
         app?.destroy({ removeView: true }, { children: true });
         app = null;
