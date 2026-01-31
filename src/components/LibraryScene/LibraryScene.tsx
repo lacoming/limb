@@ -17,6 +17,7 @@ import {
 import {
   cellKey,
   devAssertNeighborDirection,
+  isConnected,
   parseCellKey,
 } from "../../lib/cellKeys";
 import {
@@ -33,6 +34,7 @@ const DEBUG_THROTTLE_MS = 250;
 const BG = 0x1a1a1a;
 const DEV_GRID_LOG = false;
 const MAX_HISTORY = 100;
+const DELETE_CONFIRM_THRESHOLD = 20;
 
 type HistoryAction = {
   type: "add" | "remove" | "batch" | "clear";
@@ -58,6 +60,7 @@ export interface LibrarySceneRef {
 
 export interface LibrarySceneProps {
   mode?: "edit" | "view";
+  safeDeleteEnabled?: boolean;
   onCameraChange?: (data: {
     x: number;
     y: number;
@@ -66,34 +69,47 @@ export interface LibrarySceneProps {
   onCellCountChange?: (count: number) => void;
   onMultiSelectionChange?: (count: number) => void;
   onHistoryChange?: (canUndo: boolean, canRedo: boolean) => void;
+  onDeleteBlocked?: (reason: string) => void;
+  onRequestDelete?: (n: number, perform: () => void) => void;
 }
 
 export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
   function LibraryScene(
     {
       mode = "edit",
+      safeDeleteEnabled = true,
       onCameraChange,
       onCellCountChange,
       onMultiSelectionChange,
       onHistoryChange,
+      onDeleteBlocked,
+      onRequestDelete,
     },
     ref
   ) {
     const containerRef = useRef<HTMLDivElement>(null);
     const modeRef = useRef(mode);
+    const safeDeleteEnabledRef = useRef(safeDeleteEnabled);
     const onCameraChangeRef = useRef(onCameraChange);
     const onCellCountChangeRef = useRef(onCellCountChange);
     const onMultiSelectionChangeRef = useRef(onMultiSelectionChange);
     const onHistoryChangeRef = useRef(onHistoryChange);
+    const onDeleteBlockedRef = useRef(onDeleteBlocked);
+    const onRequestDeleteRef = useRef(onRequestDelete);
     useEffect(() => {
       modeRef.current = mode;
     }, [mode]);
+    useEffect(() => {
+      safeDeleteEnabledRef.current = safeDeleteEnabled;
+    }, [safeDeleteEnabled]);
     useEffect(() => {
       onCameraChangeRef.current = onCameraChange;
       onCellCountChangeRef.current = onCellCountChange;
       onMultiSelectionChangeRef.current = onMultiSelectionChange;
       onHistoryChangeRef.current = onHistoryChange;
-    }, [onCameraChange, onCellCountChange, onMultiSelectionChange, onHistoryChange]);
+      onDeleteBlockedRef.current = onDeleteBlocked;
+      onRequestDeleteRef.current = onRequestDelete;
+    }, [onCameraChange, onCellCountChange, onMultiSelectionChange, onHistoryChange, onDeleteBlocked, onRequestDelete]);
 
     useImperativeHandle(
       ref,
@@ -252,6 +268,12 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           rebuildShelf();
           updateSelection();
           sanitizeSelection();
+        };
+
+        const canApplyDeletion = (nextOccupied: Set<string>): boolean => {
+          if (!safeDeleteEnabledRef.current) return true;
+          if (nextOccupied.size === 0) return true;
+          return isConnected(nextOccupied);
         };
 
         let edgeErrors = 0;
@@ -422,17 +444,39 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         getCellsRef.current = (): Array<{ id: CellId; gx: number; gy: number }> =>
           grid.getAllCells();
         removeCellRef.current = (id: CellId): boolean => {
-          if (!app || cancelled) return false;
+          if (!app || cancelled || modeRef.current !== "edit") return false;
           const cell = grid.getCell(id);
           if (!cell) return false;
           if (selectedCellKey === id) selectedCellKey = null;
           const next = new Set(getOccupiedKeys());
           next.delete(cellKey(cell.gx, cell.gy));
+          if (!canApplyDeletion(next)) {
+            onDeleteBlockedRef.current?.("Delete blocked: would split structure");
+            return false;
+          }
           commitOccupancy(next, "remove");
           return true;
         };
         removeSelectedCellsRef.current = (): void => {
-          if (!app || cancelled) return;
+          if (!app || cancelled || modeRef.current !== "edit") return;
+          const performBatch = (
+            next: Set<string>,
+            n: number,
+            type: "batch" | "remove",
+            meta: string | undefined,
+            clearSelection: () => void
+          ) => {
+            const doCommit = () => {
+              clearSelection();
+              commitOccupancy(next, type, meta);
+              notifyMultiSelectionChange();
+            };
+            if (n > DELETE_CONFIRM_THRESHOLD && onRequestDeleteRef.current) {
+              onRequestDeleteRef.current(n, doCommit);
+            } else {
+              doCommit();
+            }
+          };
           if (multiSelectedCells.size > 0) {
             const idsToRemove: CellId[] = [];
             for (const cell of grid.getAllCells()) {
@@ -440,39 +484,58 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
                 idsToRemove.push(cell.id);
               }
             }
-            if (selectedCellKey && idsToRemove.includes(selectedCellKey)) {
-              selectedCellKey = null;
-            }
-            multiSelectedCells.clear();
             const next = new Set(getOccupiedKeys());
             for (const id of idsToRemove) {
               const c = grid.getCell(id);
               if (c) next.delete(cellKey(c.gx, c.gy));
             }
-            commitOccupancy(
+            if (!canApplyDeletion(next)) {
+              onDeleteBlockedRef.current?.("Delete blocked: would split structure");
+              return;
+            }
+            performBatch(
               next,
+              idsToRemove.length,
               "batch",
               idsToRemove.length > 0
                 ? `Removed ${idsToRemove.length} cells`
-                : undefined
+                : undefined,
+              () => {
+                if (selectedCellKey && idsToRemove.includes(selectedCellKey)) {
+                  selectedCellKey = null;
+                }
+                multiSelectedCells.clear();
+              }
             );
-            notifyMultiSelectionChange();
           } else if (selectedCellKey) {
             const cell = grid.getCell(selectedCellKey);
             if (cell) {
-              selectedCellKey = null;
               const next = new Set(getOccupiedKeys());
               next.delete(cellKey(cell.gx, cell.gy));
-              commitOccupancy(next, "remove");
+              if (!canApplyDeletion(next)) {
+                onDeleteBlockedRef.current?.("Delete blocked: would split structure");
+                return;
+              }
+              performBatch(next, 1, "remove", undefined, () => {
+                selectedCellKey = null;
+              });
             }
           }
         };
         clearRef.current = (): void => {
-          if (!app || cancelled) return;
-          selectedCellKey = null;
-          multiSelectedCells.clear();
-          commitOccupancy(new Set(), "clear");
-          notifyMultiSelectionChange();
+          if (!app || cancelled || modeRef.current !== "edit") return;
+          const n = getOccupiedKeys().size;
+          const doClear = () => {
+            selectedCellKey = null;
+            multiSelectedCells.clear();
+            commitOccupancy(new Set(), "clear");
+            notifyMultiSelectionChange();
+          };
+          if (n > DELETE_CONFIRM_THRESHOLD && onRequestDeleteRef.current) {
+            onRequestDeleteRef.current(n, doClear);
+          } else {
+            doClear();
+          }
         };
 
         const undo = (): void => {

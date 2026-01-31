@@ -23,6 +23,35 @@ export function hasCell(
 }
 
 /**
+ * Returns true if all cells in occupied form a single connected component
+ * (4-connected: U/D/L/R neighbors).
+ */
+export function isConnected(occupied: Set<string>): boolean {
+  if (occupied.size <= 1) return true;
+  const start = occupied.values().next().value as string;
+  const visited = new Set<string>();
+  const queue = [start];
+  visited.add(start);
+  while (queue.length > 0) {
+    const k = queue.shift()!;
+    const { gx, gy } = parseCellKey(k);
+    for (const [dx, dy] of [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ] as const) {
+      const nk = cellKey(gx + dx, gy + dy);
+      if (occupied.has(nk) && !visited.has(nk)) {
+        visited.add(nk);
+        queue.push(nk);
+      }
+    }
+  }
+  return visited.size === occupied.size;
+}
+
+/**
  * Dev-only: asserts that for cell (gx, gy) only the neighbor (ngx, ngy)
  * is present in that direction. Run only when (gx, gy) has exactly one
  * neighbor (the one just added). dx = ngx - gx, dy = ngy - gy must be

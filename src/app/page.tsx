@@ -14,6 +14,11 @@ export default function Home() {
   const [multiSelectedCount, setMultiSelectedCount] = useState(0);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  const [safeDeleteEnabled, setSafeDeleteEnabled] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState<{
+    n: number;
+    perform: () => void;
+  } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [debugDirty, setDebugDirty] = useState(0);
   const [controlsExpanded, setControlsExpanded] = useState(true);
@@ -53,6 +58,13 @@ export default function Home() {
     }
   }, [showToast]);
 
+  const handleRequestDelete = useCallback(
+    (n: number, perform: () => void) => {
+      setConfirmDelete({ n, perform });
+    },
+    []
+  );
+
   // Keyboard shortcut for mode toggle (E key)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -71,10 +83,13 @@ export default function Home() {
         <LibraryScene
           ref={sceneRef}
           mode={mode}
+          safeDeleteEnabled={safeDeleteEnabled}
           onCameraChange={handleCameraChange}
           onCellCountChange={handleCellCountChange}
           onMultiSelectionChange={handleMultiSelectionChange}
           onHistoryChange={handleHistoryChange}
+          onDeleteBlocked={showToast}
+          onRequestDelete={handleRequestDelete}
         />
       </div>
       <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between gap-4 px-4 py-3 bg-black/40 text-white text-sm">
@@ -117,6 +132,21 @@ export default function Home() {
           >
             Redo
           </button>
+          <div className="flex flex-col gap-0.5">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={safeDeleteEnabled}
+                onChange={(e) => setSafeDeleteEnabled(e.target.checked)}
+                disabled={mode === "view"}
+                className="rounded"
+              />
+              Safe delete
+            </label>
+            <span className="text-xs text-white/60">
+              Prevents splitting the structure
+            </span>
+          </div>
           {/* Mode toggle */}
           <div className="flex gap-1 bg-black/40 rounded p-1">
             <button
@@ -244,6 +274,36 @@ export default function Home() {
           )}
         </div>
       </div>
+
+      {/* Confirm delete modal */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/60">
+          <div className="bg-zinc-800 rounded-lg px-6 py-4 max-w-sm mx-4 text-white">
+            <p className="mb-4">
+              Delete {confirmDelete.n} cells? You can undo (Cmd/Ctrl+Z).
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(null)}
+                className="px-3 py-1.5 rounded bg-white/20 hover:bg-white/30"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  confirmDelete.perform();
+                  setConfirmDelete(null);
+                }}
+                className="px-3 py-1.5 rounded bg-red-500/80 hover:bg-red-500"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast */}
       {toastMessage && (
