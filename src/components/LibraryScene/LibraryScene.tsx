@@ -23,7 +23,7 @@ import { preloadShelfAssets } from "../../lib/shelfAssets";
 import { computeShelfMetrics } from "../../lib/shelfMetrics";
 import { buildShelfContainer } from "../../lib/shelfComposer";
 import { bakeShelf } from "../../lib/shelfBake";
-import { updateSelectionOverlay } from "./cellSelection";
+import { updateSelectionOverlay, type MarqueeRect } from "./cellSelection";
 
 const DEBUG_THROTTLE_MS = 250;
 const BG = 0x1a1a1a;
@@ -35,6 +35,7 @@ export interface LibrarySceneRef {
   getCellCount: () => number;
   getCells: () => Array<{ id: CellId; gx: number; gy: number }>;
   removeCell: (id: CellId) => boolean;
+  removeSelectedCells: () => void;
   clear: () => void;
   getEdgeErrors: () => number;
 }
@@ -47,21 +48,24 @@ export interface LibrarySceneProps {
     zoom: number;
   }) => void;
   onCellCountChange?: (count: number) => void;
+  onMultiSelectionChange?: (count: number) => void;
 }
 
 export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
-  function LibraryScene({ mode = 'edit', onCameraChange, onCellCountChange }, ref) {
+  function LibraryScene({ mode = 'edit', onCameraChange, onCellCountChange, onMultiSelectionChange }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const modeRef = useRef(mode);
     const onCameraChangeRef = useRef(onCameraChange);
     const onCellCountChangeRef = useRef(onCellCountChange);
+    const onMultiSelectionChangeRef = useRef(onMultiSelectionChange);
     useEffect(() => {
       modeRef.current = mode;
     }, [mode]);
     useEffect(() => {
       onCameraChangeRef.current = onCameraChange;
       onCellCountChangeRef.current = onCellCountChange;
-    }, [onCameraChange, onCellCountChange]);
+      onMultiSelectionChangeRef.current = onMultiSelectionChange;
+    }, [onCameraChange, onCellCountChange, onMultiSelectionChange]);
 
     useImperativeHandle(
       ref,
@@ -81,6 +85,9 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         removeCell(id: CellId) {
           return removeCellRef.current?.(id) ?? false;
         },
+        removeSelectedCells() {
+          removeSelectedCellsRef.current?.();
+        },
         clear() {
           clearRef.current?.();
         },
@@ -98,6 +105,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
       (() => Array<{ id: CellId; gx: number; gy: number }>) | null
     >(null);
     const removeCellRef = useRef<((id: CellId) => boolean) | null>(null);
+    const removeSelectedCellsRef = useRef<(() => void) | null>(null);
     const clearRef = useRef<(() => void) | null>(null);
     const getEdgeErrorsRef = useRef<(() => number) | null>(null);
     const initOnceRef = useRef(false);
@@ -143,8 +151,16 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
 
         let bakedShelf: Sprite | null = null;
         let selectedCellKey: string | null = null;
+        const multiSelectedCells = new Set<string>();
+        let isMarqueeDragging = false;
+        const marqueeStartLocal = { x: 0, y: 0 };
+        const marqueeEndLocal = { x: 0, y: 0 };
         const selectionOverlay = new Container();
         worldContent.addChild(selectionOverlay);
+
+        const notifyMultiSelectionChange = () => {
+          onMultiSelectionChangeRef.current?.(multiSelectedCells.size);
+        };
 
         let edgeErrors = 0;
 
@@ -227,6 +243,14 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         const updateSelection = () => {
           const gb = grid.getBounds();
           if (gb) {
+            let marqueeRect: MarqueeRect | null = null;
+            if (isMarqueeDragging) {
+              const minX = Math.min(marqueeStartLocal.x, marqueeEndLocal.x);
+              const minY = Math.min(marqueeStartLocal.y, marqueeEndLocal.y);
+              const maxX = Math.max(marqueeStartLocal.x, marqueeEndLocal.x);
+              const maxY = Math.max(marqueeStartLocal.y, marqueeEndLocal.y);
+              marqueeRect = { minX, minY, maxX, maxY };
+            }
             updateSelectionOverlay(
               selectionOverlay,
               selectedCellKey,
@@ -235,7 +259,9 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
               0,
               0,
               handleAddCellFromMarker,
-              handleRemoveCellFromMarker
+              handleRemoveCellFromMarker,
+              multiSelectedCells,
+              marqueeRect
             );
           } else {
             selectionOverlay.removeChildren();
@@ -301,12 +327,43 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           updateSelection();
           return true;
         };
+        removeSelectedCellsRef.current = (): void => {
+          if (!app || cancelled) return;
+          if (multiSelectedCells.size > 0) {
+            const idsToRemove: CellId[] = [];
+            for (const cell of grid.getAllCells()) {
+              if (multiSelectedCells.has(cellKey(cell.gx, cell.gy))) {
+                idsToRemove.push(cell.id);
+              }
+            }
+            for (const id of idsToRemove) {
+              grid.removeCell(id);
+            }
+            if (
+              selectedCellKey &&
+              idsToRemove.includes(selectedCellKey)
+            ) {
+              selectedCellKey = null;
+            }
+            multiSelectedCells.clear();
+            rebuildShelf();
+            updateSelection();
+            notifyMultiSelectionChange();
+          } else if (selectedCellKey) {
+            grid.removeCell(selectedCellKey);
+            selectedCellKey = null;
+            rebuildShelf();
+            updateSelection();
+          }
+        };
         clearRef.current = (): void => {
           if (!app || cancelled) return;
           selectedCellKey = null;
+          multiSelectedCells.clear();
           grid.clear();
           rebuildShelf();
           updateSelection();
+          notifyMultiSelectionChange();
         };
         getEdgeErrorsRef.current = (): number => edgeErrors;
 
@@ -392,16 +449,54 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         const DOUBLE_TAP_MS = 300;
         const DOUBLE_TAP_PX = 24;
 
+        const getLocalFromPointer = (globalX: number, globalY: number) => {
+          const p = selectionOverlay.toLocal(new Point(globalX, globalY));
+          return { x: p.x, y: p.y };
+        };
+
         const onPointerDown = (e: FederatedPointerEvent) => {
           if (pinchActive) return;
-          isDragging = true;
           lastScreenX = e.global.x;
           lastScreenY = e.global.y;
           dragStartX = e.global.x;
           dragStartY = e.global.y;
+
+          if (e.pointerType === "mouse") {
+            const gridCoords = getGridCoordsFromPointer(e.global.x, e.global.y);
+            const gb = grid.getBounds();
+            const hasCell =
+              gb &&
+              gridCoords &&
+              gridCoords.gx >= gb.minGX &&
+              gridCoords.gx <= gb.maxGX &&
+              gridCoords.gy >= gb.minGY &&
+              gridCoords.gy <= gb.maxGY &&
+              grid.isOccupied(gridCoords.gx, gridCoords.gy);
+
+            if (!hasCell) {
+              isMarqueeDragging = true;
+              isDragging = false;
+              const local = getLocalFromPointer(e.global.x, e.global.y);
+              marqueeStartLocal.x = local.x;
+              marqueeStartLocal.y = local.y;
+              marqueeEndLocal.x = local.x;
+              marqueeEndLocal.y = local.y;
+              updateSelection();
+              return;
+            }
+          }
+          isDragging = true;
         };
         const onGlobalMove = (e: FederatedPointerEvent) => {
-          if (pinchActive || !isDragging) return;
+          if (pinchActive) return;
+          if (isMarqueeDragging) {
+            const local = getLocalFromPointer(e.global.x, e.global.y);
+            marqueeEndLocal.x = local.x;
+            marqueeEndLocal.y = local.y;
+            updateSelection();
+            return;
+          }
+          if (!isDragging) return;
           const dx = e.global.x - lastScreenX;
           const dy = e.global.y - lastScreenY;
           lastScreenX = e.global.x;
@@ -416,6 +511,45 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           );
         };
         const onPointerUp = (e: FederatedPointerEvent) => {
+          if (isMarqueeDragging) {
+            const minX = Math.min(marqueeStartLocal.x, marqueeEndLocal.x);
+            const minY = Math.min(marqueeStartLocal.y, marqueeEndLocal.y);
+            const maxX = Math.max(marqueeStartLocal.x, marqueeEndLocal.x);
+            const maxY = Math.max(marqueeStartLocal.y, marqueeEndLocal.y);
+            const gb = grid.getBounds();
+            if (gb) {
+              const gxMin = Math.max(
+                gb.minGX,
+                Math.floor(minX / metrics.CELL_W)
+              );
+              const gxMax = Math.min(
+                gb.maxGX,
+                Math.ceil(maxX / metrics.CELL_W) - 1
+              );
+              const gyMin = Math.max(
+                gb.minGY,
+                Math.floor(minY / metrics.CELL_H)
+              );
+              const gyMax = Math.min(
+                gb.maxGY,
+                Math.ceil(maxY / metrics.CELL_H) - 1
+              );
+              for (let gx = gxMin; gx <= gxMax; gx++) {
+                for (let gy = gyMin; gy <= gyMax; gy++) {
+                  if (grid.isOccupied(gx, gy)) {
+                    multiSelectedCells.add(cellKey(gx, gy));
+                  }
+                }
+              }
+            }
+            isMarqueeDragging = false;
+            updateSelection();
+            notifyMultiSelectionChange();
+            isDragging = false;
+            springBackActive = true;
+            return;
+          }
+
           if (isDragging) {
             const dragDist = Math.hypot(
               e.global.x - dragStartX,
@@ -435,12 +569,18 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
               if (isDoubleTap && gridCoords) {
                 e.stopPropagation();
                 e.preventDefault?.();
-                // Double tap toggle only works in edit mode
-                if (modeRef.current === 'edit') {
+                if (modeRef.current === "edit") {
                   if (grid.isOccupied(gridCoords.gx, gridCoords.gy)) {
-                    let cellToRemove: { id: CellId; gx: number; gy: number } | null = null;
+                    let cellToRemove: {
+                      id: CellId;
+                      gx: number;
+                      gy: number;
+                    } | null = null;
                     for (const cell of grid.getAllCells()) {
-                      if (cell.gx === gridCoords.gx && cell.gy === gridCoords.gy) {
+                      if (
+                        cell.gx === gridCoords.gx &&
+                        cell.gy === gridCoords.gy
+                      ) {
                         cellToRemove = cell;
                         break;
                       }
@@ -462,18 +602,38 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
                   gridCoords.gy <= gb.maxGY &&
                   grid.isOccupied(gridCoords.gx, gridCoords.gy);
                 if (inBounds) {
-                  let clickedCell: { id: CellId; gx: number; gy: number } | null = null;
+                  let clickedCell: {
+                    id: CellId;
+                    gx: number;
+                    gy: number;
+                  } | null = null;
                   for (const cell of grid.getAllCells()) {
-                    if (cell.gx === gridCoords.gx && cell.gy === gridCoords.gy) {
+                    if (
+                      cell.gx === gridCoords.gx &&
+                      cell.gy === gridCoords.gy
+                    ) {
                       clickedCell = cell;
                       break;
                     }
                   }
                   if (clickedCell) {
-                    if (selectedCellKey === clickedCell.id) {
-                      selectedCellKey = null;
-                    } else {
+                    const key = cellKey(clickedCell.gx, clickedCell.gy);
+                    if (e.shiftKey) {
+                      if (multiSelectedCells.has(key)) {
+                        multiSelectedCells.delete(key);
+                      } else {
+                        multiSelectedCells.add(key);
+                      }
                       selectedCellKey = clickedCell.id;
+                      notifyMultiSelectionChange();
+                    } else {
+                      multiSelectedCells.clear();
+                      if (selectedCellKey === clickedCell.id) {
+                        selectedCellKey = null;
+                      } else {
+                        selectedCellKey = clickedCell.id;
+                      }
+                      notifyMultiSelectionChange();
                     }
                     updateSelection();
                   }
@@ -560,8 +720,57 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         container.addEventListener("touchend", onTouchEnd, { passive: true });
 
         const onKeyDown = (e: KeyboardEvent) => {
-          if (!selectedCellKey) return; // Ignore if no selection
+          if (e.key === "Escape") {
+            e.preventDefault();
+            if (isMarqueeDragging) {
+              isMarqueeDragging = false;
+              updateSelection();
+              return;
+            }
+            if (multiSelectedCells.size > 0) {
+              multiSelectedCells.clear();
+              updateSelection();
+              notifyMultiSelectionChange();
+              return;
+            }
+            selectedCellKey = null;
+            updateSelection();
+            return;
+          }
 
+          if (e.key === "Delete" || e.key === "Backspace") {
+            if (modeRef.current !== "edit") return;
+            e.preventDefault();
+            if (multiSelectedCells.size > 0) {
+              const idsToRemove: CellId[] = [];
+              for (const cell of grid.getAllCells()) {
+                if (multiSelectedCells.has(cellKey(cell.gx, cell.gy))) {
+                  idsToRemove.push(cell.id);
+                }
+              }
+              for (const id of idsToRemove) {
+                grid.removeCell(id);
+              }
+              if (selectedCellKey && idsToRemove.includes(selectedCellKey)) {
+                selectedCellKey = null;
+              }
+              multiSelectedCells.clear();
+              rebuildShelf();
+              updateSelection();
+              notifyMultiSelectionChange();
+              return;
+            }
+            if (selectedCellKey) {
+              grid.removeCell(selectedCellKey);
+              selectedCellKey = null;
+              rebuildShelf();
+              updateSelection();
+              return;
+            }
+            return;
+          }
+
+          if (!selectedCellKey) return;
           const selectedCell = grid.getCell(selectedCellKey);
           if (!selectedCell) return;
 
@@ -576,21 +785,14 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
             targetGX -= 1;
           } else if (e.key === "ArrowRight") {
             targetGX += 1;
-          } else if (e.key === "Escape") {
-            selectedCellKey = null;
-            updateSelection();
-            return;
           } else {
-            return; // Ignore other keys
+            return;
           }
 
-          e.preventDefault(); // Prevent browser scroll
+          e.preventDefault();
 
-          // Arrow key add/remove only works in edit mode
-          if (modeRef.current === 'edit') {
-            // Toggle: if neighbor exists -> remove, if not -> add
+          if (modeRef.current === "edit") {
             if (grid.isOccupied(targetGX, targetGY)) {
-              // Find cell ID for removal
               let cellToRemove: { id: CellId; gx: number; gy: number } | null =
                 null;
               for (const cell of grid.getAllCells()) {
@@ -602,11 +804,8 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
               if (cellToRemove && removeCellRef.current) {
                 removeCellRef.current(cellToRemove.id);
               }
-            } else {
-              // Add new cell
-              if (addCellAtRef.current) {
-                addCellAtRef.current(targetGX, targetGY);
-              }
+            } else if (addCellAtRef.current) {
+              addCellAtRef.current(targetGX, targetGY);
             }
           }
         };
@@ -641,6 +840,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         getCellCountRef.current = null;
         getCellsRef.current = null;
         removeCellRef.current = null;
+        removeSelectedCellsRef.current = null;
         clearRef.current = null;
         getEdgeErrorsRef.current = null;
         teardown?.();

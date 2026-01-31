@@ -1,19 +1,31 @@
 /**
  * Cell selection overlay rendering.
  * Draws selection highlight and neighbor hints (add/remove).
+ * Supports multi-selection highlights and marquee rect.
  */
 import { Container, Graphics, Rectangle, FederatedPointerEvent } from "pixi.js";
-import type { LibraryGrid, CellId } from "../../lib/libraryGrid";
+import type { LibraryGrid } from "../../lib/libraryGrid";
 import type { ShelfMetrics } from "../../lib/shelfMetrics";
-import { cellKey } from "../../lib/cellKeys";
+import { parseCellKey } from "../../lib/cellKeys";
 
 const SELECTION_COLOR = 0x4a90e2;
 const SELECTION_ALPHA = 0.3;
+const MULTI_SELECTION_ALPHA = 0.25;
+const MARQUEE_COLOR = 0x4a90e2;
+const MARQUEE_ALPHA = 0.2;
+const MULTI_SELECTION_CAP = 500;
 const ADD_HINT_COLOR = 0x4ade80; // green
 const REMOVE_HINT_COLOR = 0xef4444; // red
 const HINT_ALPHA = 0.4;
 const HINT_SIZE = 20;
 const DEV_OVERLAY_LOG = false;
+
+export interface MarqueeRect {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
 
 function cellToLocal(
   gx: number,
@@ -37,42 +49,42 @@ export function updateSelectionOverlay(
   gridOriginX: number,
   gridOriginY: number,
   onAddCell?: (gx: number, gy: number) => void,
-  onRemoveCell?: (gx: number, gy: number) => void
+  onRemoveCell?: (gx: number, gy: number) => void,
+  multiSelectedCells?: Set<string>,
+  marqueeRect?: MarqueeRect | null
 ): void {
   overlay.removeChildren();
 
-  if (!selectedKey) return;
-
-  const selectedCell = grid.getCell(selectedKey);
-  if (!selectedCell) return;
-
   const { CELL_W, CELL_H } = metrics;
 
-  const sel = cellToLocal(
-    selectedCell.gx,
-    selectedCell.gy,
-    gridOriginX,
-    gridOriginY,
-    CELL_W,
-    CELL_H
-  );
-  const selX = sel.x;
-  const selY = sel.y;
+  // 1. Single selection highlight + neighbor hints (only when single selected)
+  if (selectedKey) {
+    const selectedCell = grid.getCell(selectedKey);
+    if (selectedCell) {
+      const sel = cellToLocal(
+        selectedCell.gx,
+        selectedCell.gy,
+        gridOriginX,
+        gridOriginY,
+        CELL_W,
+        CELL_H
+      );
+      const selX = sel.x;
+      const selY = sel.y;
 
-  if (process.env.NODE_ENV === "development" && DEV_OVERLAY_LOG) {
-    console.log("[overlay] selected", {
-      gx: selectedCell.gx,
-      gy: selectedCell.gy,
-      localX: selX,
-      localY: selY,
-    });
-  }
+      if (process.env.NODE_ENV === "development" && DEV_OVERLAY_LOG) {
+        console.log("[overlay] selected", {
+          gx: selectedCell.gx,
+          gy: selectedCell.gy,
+          localX: selX,
+          localY: selY,
+        });
+      }
 
-  // Draw selection highlight
-  const selectionG = new Graphics();
-  selectionG.rect(selX, selY, CELL_W, CELL_H);
-  selectionG.fill({ color: SELECTION_COLOR, alpha: SELECTION_ALPHA });
-  overlay.addChild(selectionG);
+      const selectionG = new Graphics();
+      selectionG.rect(selX, selY, CELL_W, CELL_H);
+      selectionG.fill({ color: SELECTION_COLOR, alpha: SELECTION_ALPHA });
+      overlay.addChild(selectionG);
 
   // Get neighbors
   const neighbors = [
@@ -147,5 +159,40 @@ export function updateSelectionOverlay(
     });
 
     overlay.addChild(hintG);
+  }
+    }
+  }
+
+  // 2. Multi selection highlights
+  if (multiSelectedCells && multiSelectedCells.size > 0) {
+    let drawn = 0;
+    for (const key of multiSelectedCells) {
+      if (drawn >= MULTI_SELECTION_CAP) break;
+      const { gx, gy } = parseCellKey(key);
+      if (!grid.isOccupied(gx, gy)) continue;
+      const loc = cellToLocal(
+        gx,
+        gy,
+        gridOriginX,
+        gridOriginY,
+        CELL_W,
+        CELL_H
+      );
+      const multiG = new Graphics();
+      multiG.rect(loc.x, loc.y, CELL_W, CELL_H);
+      multiG.fill({ color: SELECTION_COLOR, alpha: MULTI_SELECTION_ALPHA });
+      overlay.addChild(multiG);
+      drawn++;
+    }
+  }
+
+  // 3. Marquee rect (during drag)
+  if (marqueeRect) {
+    const w = marqueeRect.maxX - marqueeRect.minX;
+    const h = marqueeRect.maxY - marqueeRect.minY;
+    const marqueeG = new Graphics();
+    marqueeG.rect(marqueeRect.minX, marqueeRect.minY, w, h);
+    marqueeG.fill({ color: MARQUEE_COLOR, alpha: MARQUEE_ALPHA });
+    overlay.addChild(marqueeG);
   }
 }

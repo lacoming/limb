@@ -11,6 +11,7 @@ export default function Home() {
   const [camY, setCamY] = useState(0);
   const [camZoom, setCamZoom] = useState(1);
   const [cellCount, setCellCount] = useState(0);
+  const [multiSelectedCount, setMultiSelectedCount] = useState(0);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [debugDirty, setDebugDirty] = useState(0);
   const [controlsExpanded, setControlsExpanded] = useState(true);
@@ -26,6 +27,10 @@ export default function Home() {
 
   const handleCellCountChange = useCallback((count: number) => {
     setCellCount(count);
+  }, []);
+
+  const handleMultiSelectionChange = useCallback((count: number) => {
+    setMultiSelectedCount(count);
   }, []);
 
   const showToast = useCallback((message: string) => {
@@ -61,6 +66,7 @@ export default function Home() {
           mode={mode}
           onCameraChange={handleCameraChange}
           onCellCountChange={handleCellCountChange}
+          onMultiSelectionChange={handleMultiSelectionChange}
         />
       </div>
       <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between gap-4 px-4 py-3 bg-black/40 text-white text-sm">
@@ -72,6 +78,19 @@ export default function Home() {
           <span className="tabular-nums text-xs">
             Cells: {cellCount}
           </span>
+          {multiSelectedCount > 0 && (
+            <span className="tabular-nums text-xs text-blue-300">
+              Selected: {multiSelectedCount}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => sceneRef.current?.removeSelectedCells()}
+            disabled={multiSelectedCount === 0 || mode === "view"}
+            className="px-3 py-1.5 rounded bg-red-500/60 hover:bg-red-500/80 disabled:opacity-50 disabled:pointer-events-none text-sm"
+          >
+            Remove Selected
+          </button>
           {/* Mode toggle */}
           <div className="flex gap-1 bg-black/40 rounded p-1">
             <button
@@ -165,7 +184,14 @@ export default function Home() {
                 <div className="text-white/80 font-medium mb-1">Desktop:</div>
                 <ul className="space-y-0.5 text-white/70">
                   <li>• Click: Select cell</li>
-                  {mode === 'edit' && <li>• Arrows: Add/remove neighbors</li>}
+                  <li>• Marquee: Drag on empty area</li>
+                  <li>• Shift+Click: Toggle multi-select</li>
+                  {mode === "edit" && (
+                    <li>• Delete: Remove selected</li>
+                  )}
+                  {mode === "edit" && (
+                    <li>• Arrows: Add/remove neighbors</li>
+                  )}
                   <li>• Esc: Unselect</li>
                   <li>• Wheel: Zoom</li>
                   <li>• Drag: Pan</li>
