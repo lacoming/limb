@@ -232,6 +232,17 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         worldContent.addChild(selectionOverlay);
         const booksLayer = new Container();
 
+        const ensureLayerOrder = () => {
+          if (!bakedShelf?.parent) return;
+          const order = [bakedShelf, booksLayer, selectionOverlay];
+          for (let i = 0; i < order.length; i++) {
+            const c = order[i];
+            if (c.parent !== worldContent) continue;
+            const idx = worldContent.getChildIndex(c);
+            if (idx !== i) worldContent.setChildIndex(c, i);
+          }
+        };
+
         const notifyMultiSelectionChange = () => {
           onMultiSelectionChangeRef.current?.(multiSelectedCells.size);
         };
@@ -336,6 +347,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           worldContent.addChild(selectionOverlay);
           // Update overlay with new bounds after rebuild
           updateSelection();
+          ensureLayerOrder();
         };
 
         const handleAddCellFromMarker = (gx: number, gy: number) => {
@@ -440,6 +452,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           if (visible && data.length > 0) {
             renderBooksLayer(booksLayer, metrics, data, 0, 0);
           }
+          ensureLayerOrder();
         };
         updateBooksRef.current(demoBooksVisible, demoBooksData);
 
