@@ -10,6 +10,10 @@ export interface ShelfMetrics {
   CELL_H: number;
   BACK_FILL_OFFSET_X: number;
   BACK_FILL_OFFSET_Y: number;
+  INSET_LEFT: number;
+  INSET_RIGHT: number;
+  INSET_TOP: number;
+  INSET_BOTTOM: number;
 }
 
 /**
@@ -54,10 +58,20 @@ export function computeShelfMetrics(
   const BACK_FILL_OFFSET_X = (cellW - backFill.width) / 2;
   const BACK_FILL_OFFSET_Y = (cellH - backFill.height) / 2;
 
+  // Inner rect insets (frame thickness): books anchor inside the frame
+  const INSET_LEFT = edgeLeft.width;
+  const INSET_RIGHT = edgeRight.width;
+  const INSET_TOP = edgeTop.height;
+  const INSET_BOTTOM = edgeBottom.height;
+
   return {
     CELL_W: cellW,
     CELL_H: cellH,
     BACK_FILL_OFFSET_X,
     BACK_FILL_OFFSET_Y,
+    INSET_LEFT,
+    INSET_RIGHT,
+    INSET_TOP,
+    INSET_BOTTOM,
   };
 }

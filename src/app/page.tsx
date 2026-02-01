@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { DebugCellsPanel } from "@/components/DebugCellsPanel";
 import { LibraryScene, type LibrarySceneRef } from "@/components/LibraryScene";
+import { useBooksStore, computeUserCopiesWithEdition } from "@/lib/books";
 
 export default function Home() {
   const sceneRef = useRef<LibrarySceneRef>(null);
@@ -22,6 +23,15 @@ export default function Home() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [debugDirty, setDebugDirty] = useState(0);
   const [controlsExpanded, setControlsExpanded] = useState(true);
+
+  const demoBooksVisible = useBooksStore((s) => s.demoVisible);
+  const works = useBooksStore((s) => s.works);
+  const editions = useBooksStore((s) => s.editions);
+  const userCopies = useBooksStore((s) => s.userCopies);
+  const demoBooksData = useMemo(
+    () => computeUserCopiesWithEdition(works, editions, userCopies),
+    [works, editions, userCopies]
+  );
 
   const handleCameraChange = useCallback(
     (data: { x: number; y: number; zoom: number }) => {
@@ -84,6 +94,8 @@ export default function Home() {
           ref={sceneRef}
           mode={mode}
           safeDeleteEnabled={safeDeleteEnabled}
+          demoBooksVisible={demoBooksVisible}
+          demoBooksData={demoBooksData}
           onCameraChange={handleCameraChange}
           onCellCountChange={handleCellCountChange}
           onMultiSelectionChange={handleMultiSelectionChange}
@@ -147,6 +159,15 @@ export default function Home() {
               Prevents splitting the structure
             </span>
           </div>
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={demoBooksVisible}
+              onChange={() => useBooksStore.getState().toggleDemo()}
+              className="rounded"
+            />
+            Demo Books
+          </label>
           {/* Mode toggle */}
           <div className="flex gap-1 bg-black/40 rounded p-1">
             <button

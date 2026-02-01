@@ -29,6 +29,8 @@ import { computeShelfMetrics } from "../../lib/shelfMetrics";
 import { buildShelfContainer } from "../../lib/shelfComposer";
 import { bakeShelf } from "../../lib/shelfBake";
 import { updateSelectionOverlay, type MarqueeRect } from "./cellSelection";
+import { renderBooksLayer } from "./booksLayer";
+import type { UserCopyWithEdition } from "../../lib/books/types";
 
 const DEBUG_THROTTLE_MS = 250;
 const BG = 0x1a1a1a;
@@ -71,6 +73,8 @@ export interface LibrarySceneProps {
   onHistoryChange?: (canUndo: boolean, canRedo: boolean) => void;
   onDeleteBlocked?: (reason: string) => void;
   onRequestDelete?: (n: number, perform: () => void) => void;
+  demoBooksVisible?: boolean;
+  demoBooksData?: UserCopyWithEdition[];
 }
 
 export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
@@ -84,6 +88,8 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
       onHistoryChange,
       onDeleteBlocked,
       onRequestDelete,
+      demoBooksVisible = false,
+      demoBooksData = [],
     },
     ref
   ) {
@@ -102,6 +108,10 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
     useEffect(() => {
       safeDeleteEnabledRef.current = safeDeleteEnabled;
     }, [safeDeleteEnabled]);
+    useEffect(() => {
+      updateBooksRef.current?.(demoBooksVisible, demoBooksData);
+    }, [demoBooksVisible, demoBooksData]);
+
     useEffect(() => {
       onCameraChangeRef.current = onCameraChange;
       onCellCountChangeRef.current = onCellCountChange;
@@ -169,6 +179,9 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
     const canUndoRef = useRef<() => boolean>(() => false);
     const canRedoRef = useRef<() => boolean>(() => false);
     const initOnceRef = useRef(false);
+    const updateBooksRef = useRef<
+      ((visible: boolean, data: UserCopyWithEdition[]) => void) | null
+    >(null);
 
     useEffect(() => {
       if (initOnceRef.current) return;
@@ -217,6 +230,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         const marqueeEndLocal = { x: 0, y: 0 };
         const selectionOverlay = new Container();
         worldContent.addChild(selectionOverlay);
+        const booksLayer = new Container();
 
         const notifyMultiSelectionChange = () => {
           onMultiSelectionChangeRef.current?.(multiSelectedCells.size);
@@ -317,7 +331,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
           }
           worldContent.addChild(sprite);
           bakedShelf = sprite;
-          // Ensure selectionOverlay is on top
+          if (!booksLayer.parent) worldContent.addChild(booksLayer);
           worldContent.removeChild(selectionOverlay);
           worldContent.addChild(selectionOverlay);
           // Update overlay with new bounds after rebuild
@@ -420,6 +434,14 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         rebuildShelf();
         if (cancelled || !app) return;
         if (containerRef.current !== container) return;
+
+        updateBooksRef.current = (visible: boolean, data: UserCopyWithEdition[]) => {
+          booksLayer.removeChildren();
+          if (visible && data.length > 0) {
+            renderBooksLayer(booksLayer, metrics, data, 0, 0);
+          }
+        };
+        updateBooksRef.current(demoBooksVisible, demoBooksData);
 
         const camera: CameraState = createInitialCamera();
 
@@ -1022,6 +1044,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
             bakedShelf.destroy();
             bakedShelf = null;
           }
+          booksLayer.removeChildren();
           selectionOverlay.removeChildren();
         };
       })();
@@ -1029,6 +1052,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
       return () => {
         cancelled = true;
         initOnceRef.current = false;
+        updateBooksRef.current = null;
         resetCameraRef.current = null;
         addCellAtRef.current = null;
         getCellCountRef.current = null;
@@ -1045,6 +1069,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         app?.destroy({ removeView: true }, { children: true });
         app = null;
       };
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- init runs once; demo books sync via separate effect
     }, []);
 
     return (
