@@ -22,10 +22,12 @@ interface BooksState {
   editions: Edition[];
   userCopies: UserCopy[];
   demoVisible: boolean;
+  activePlacement: { gx: number; gy: number } | null;
   loadDemo: () => void;
   clearDemo: () => void;
   toggleDemo: () => void;
   addFromCandidate: (work: Work, edition: Edition) => void;
+  setActivePlacement: (placement: { gx: number; gy: number } | null) => void;
 }
 
 const DEMO_WORK: Work = {
@@ -75,6 +77,9 @@ export const useBooksStore = create<BooksState>()((set, get) => ({
   editions: [],
   userCopies: [],
   demoVisible: false,
+  activePlacement: null,
+
+  setActivePlacement: (placement) => set({ activePlacement: placement }),
 
   loadDemo: () =>
     set({
@@ -155,7 +160,7 @@ export const useBooksStore = create<BooksState>()((set, get) => ({
     const userCopy: UserCopy = {
       id: `copy_${editionToAdd.id}_${Date.now()}`,
       editionId: editionToAdd.id,
-      placement: { gx: 0, gy: 0 },
+      placement: state.activePlacement ?? { gx: 0, gy: 0 },
     };
 
     set({

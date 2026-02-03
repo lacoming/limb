@@ -31,6 +31,7 @@ import { bakeShelf } from "../../lib/shelfBake";
 import { updateSelectionOverlay, type MarqueeRect } from "./cellSelection";
 import { renderBooksLayer } from "./booksLayer";
 import type { UserCopyWithEdition } from "../../lib/books/types";
+import { useBooksStore } from "../../lib/books/store";
 
 const DEBUG_THROTTLE_MS = 250;
 const BG = 0x1a1a1a;
@@ -853,6 +854,7 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
                     }
                   }
                   if (clickedCell) {
+                    useBooksStore.getState().setActivePlacement({ gx: clickedCell.gx, gy: clickedCell.gy });
                     const key = cellKey(clickedCell.gx, clickedCell.gy);
                     if (e.shiftKey) {
                       if (multiSelectedCells.has(key)) {
