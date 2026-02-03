@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect, useMemo } from "react";
+import { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import { DebugCellsPanel } from "@/components/DebugCellsPanel";
 import { LibraryScene, type LibrarySceneRef } from "@/components/LibraryScene";
 import { useBooksStore, computeUserCopiesWithEdition } from "@/lib/books";
@@ -123,6 +123,11 @@ export default function Home() {
     work: WorkCandidate;
     edition: EditionCandidate;
   } | null>(null);
+  const selectedRowRef = useRef<HTMLDivElement>(null);
+  const listContainerRef = useRef<HTMLUListElement>(null);
+  const detailsHostRef = useRef<HTMLDivElement>(null);
+  const detailsCardRef = useRef<HTMLDivElement>(null);
+  const [selectedRowTop, setSelectedRowTop] = useState(0);
 
   const demoBooksVisible = useBooksStore((s) => s.demoVisible);
   const works = useBooksStore((s) => s.works);
@@ -174,6 +179,34 @@ export default function Home() {
     },
     []
   );
+
+  // Recalculate card position (desktop)
+  const recalcCardTop = useCallback(() => {
+    if (!selectedRowRef.current || !listContainerRef.current || !detailsHostRef.current) return;
+    const rowRect = selectedRowRef.current.getBoundingClientRect();
+    const listRect = listContainerRef.current.getBoundingClientRect();
+    const topPx = rowRect.top - listRect.top + listContainerRef.current.scrollTop;
+    const hostH = detailsHostRef.current.clientHeight;
+    const cardH = detailsCardRef.current?.offsetHeight ?? 0;
+    const clamped = Math.max(0, Math.min(topPx, Math.max(0, hostH - cardH)));
+    setSelectedRowTop(clamped);
+  }, []);
+
+  // Update card position on selection or search results change
+  useLayoutEffect(() => {
+    if (selectedCandidate) {
+      recalcCardTop();
+    }
+  }, [selectedCandidate, searchResults, recalcCardTop]);
+
+  // Scroll listener on list
+  useEffect(() => {
+    const list = listContainerRef.current;
+    if (!list || !selectedCandidate) return;
+    const onScroll = () => recalcCardTop();
+    list.addEventListener("scroll", onScroll, { passive: true });
+    return () => list.removeEventListener("scroll", onScroll);
+  }, [selectedCandidate, recalcCardTop]);
 
   const handleSearch = useCallback(async () => {
     const q = searchQuery.trim();
@@ -378,89 +411,122 @@ export default function Home() {
           </button>
         </div>
 
-        {/* Book Search */}
-        <div className="rounded bg-black/60 text-white text-xs overflow-hidden max-w-xs">
-          <div className="px-3 py-2 font-medium border-b border-white/20">
-            Book Search
-          </div>
-          <div className="p-3 space-y-2">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                placeholder="Title, author..."
-                className="flex-1 px-2 py-1.5 rounded bg-white/10 border border-white/20 text-sm text-white placeholder-white/50 focus:outline-none focus:border-white/40"
-              />
-              <button
-                type="button"
-                onClick={handleSearch}
-                disabled={searchLoading}
-                className="px-3 py-1.5 rounded bg-white/20 hover:bg-white/30 disabled:opacity-50 text-sm"
-              >
-                {searchLoading ? "..." : "Search"}
-              </button>
+        {/* Book Search + Desktop Details Host */}
+        <div className="flex items-stretch gap-3">
+          {/* Left Panel */}
+          <div className="rounded bg-black/60 text-white text-xs overflow-hidden max-w-xs">
+            <div className="px-3 py-2 font-medium border-b border-white/20">
+              Book Search
             </div>
-            {searchError && (
-              <p className="text-red-400 text-xs">{searchError}</p>
-            )}
-            {searchResults.length > 0 && (
-              <ul className="space-y-2 max-h-48 overflow-y-auto">
-                {searchResults.map(({ work, edition }) => (
-                  <li
-                    key={edition.id}
-                    onClick={() => setSelectedCandidate({ work, edition })}
-                    className="flex items-start justify-between gap-2 py-1.5 border-b border-white/10 last:border-0 cursor-pointer hover:bg-white/5 rounded"
-                  >
-                    {(() => {
-                      const img = edition.images;
-                      const src = img?.thumbnail || img?.small || img?.medium || img?.large;
-                      return src ? (
-                        <img
-                          src={src}
-                          alt=""
-                          loading="lazy"
-                          referrerPolicy="no-referrer"
-                          className="shrink-0 w-10 h-14 object-cover rounded-md bg-white/10"
-                        />
-                      ) : (
-                        <div className="shrink-0 w-10 h-14 rounded-md bg-white/10" />
-                      );
-                    })()}
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium truncate">{work.title}</div>
-                      <div className="text-white/70 truncate">
-                        {work.authors?.join(", ")}
-                        {edition.year != null && ` · ${edition.year}`}
-                        {edition.isbn && ` · ${edition.isbn}`}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleAddCandidate(work, edition);
-                      }}
-                      className="shrink-0 px-2 py-1 rounded bg-green-600/80 hover:bg-green-600 text-xs"
-                    >
-                      Add
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {/* Book Details Card - inline */}
+            <div className="p-3 space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                  placeholder="Title, author..."
+                  className="flex-1 px-2 py-1.5 rounded bg-white/10 border border-white/20 text-sm text-white placeholder-white/50 focus:outline-none focus:border-white/40"
+                />
+                <button
+                  type="button"
+                  onClick={handleSearch}
+                  disabled={searchLoading}
+                  className="px-3 py-1.5 rounded bg-white/20 hover:bg-white/30 disabled:opacity-50 text-sm"
+                >
+                  {searchLoading ? "..." : "Search"}
+                </button>
+              </div>
+              {searchError && (
+                <p className="text-red-400 text-xs">{searchError}</p>
+              )}
+              {searchResults.length > 0 && (
+                <ul ref={listContainerRef} className="space-y-2 max-h-48 overflow-y-auto">
+                  {searchResults.map(({ work, edition }) => {
+                    const isSelected = selectedCandidate?.edition.id === edition.id;
+                    return (
+                      <li key={edition.id}>
+                        <div
+                          ref={isSelected ? selectedRowRef : undefined}
+                          onClick={() => setSelectedCandidate({ work, edition })}
+                          className="flex items-start justify-between gap-2 py-1.5 border-b border-white/10 cursor-pointer hover:bg-white/5 rounded"
+                        >
+                          {(() => {
+                            const img = edition.images;
+                            const src = img?.thumbnail || img?.small || img?.medium || img?.large;
+                            return src ? (
+                              <img
+                                src={src}
+                                alt=""
+                                loading="lazy"
+                                referrerPolicy="no-referrer"
+                                className="shrink-0 w-10 h-14 object-cover rounded-md bg-white/10"
+                              />
+                            ) : (
+                              <div className="shrink-0 w-10 h-14 rounded-md bg-white/10" />
+                            );
+                          })()}
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium truncate">{work.title}</div>
+                            <div className="text-white/70 truncate">
+                              {work.authors?.join(", ")}
+                              {edition.year != null && ` · ${edition.year}`}
+                              {edition.isbn && ` · ${edition.isbn}`}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAddCandidate(work, edition);
+                            }}
+                            className="shrink-0 px-2 py-1 rounded bg-green-600/80 hover:bg-green-600 text-xs"
+                          >
+                            Add
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {/* Book Details Card - mobile only */}
+              {selectedCandidate && (
+                <div className="min-[900px]:hidden">
+                  <BookDetailsCard
+                    work={selectedCandidate.work}
+                    edition={selectedCandidate.edition}
+                    onAdd={() => {
+                      handleAddCandidate(selectedCandidate.work, selectedCandidate.edition);
+                      setSelectedCandidate(null);
+                    }}
+                    onClose={() => setSelectedCandidate(null)}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+          {/* Desktop Details Host - outside dark panel */}
+          <div
+            ref={detailsHostRef}
+            className="hidden min-[900px]:block relative self-stretch w-[360px] overflow-hidden"
+          >
             {selectedCandidate && (
-              <BookDetailsCard
-                work={selectedCandidate.work}
-                edition={selectedCandidate.edition}
-                onAdd={() => {
-                  handleAddCandidate(selectedCandidate.work, selectedCandidate.edition);
-                  setSelectedCandidate(null);
-                }}
-                onClose={() => setSelectedCandidate(null)}
-              />
+              <div
+                ref={detailsCardRef}
+                className="absolute left-0 w-full"
+                style={{ top: selectedRowTop }}
+              >
+                <BookDetailsCard
+                  work={selectedCandidate.work}
+                  edition={selectedCandidate.edition}
+                  onAdd={() => {
+                    handleAddCandidate(selectedCandidate.work, selectedCandidate.edition);
+                    setSelectedCandidate(null);
+                  }}
+                  onClose={() => setSelectedCandidate(null)}
+                />
+              </div>
             )}
           </div>
         </div>
