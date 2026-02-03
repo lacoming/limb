@@ -7,9 +7,9 @@ export interface Work {
 }
 
 export interface DimensionsMm {
-  height: number;
-  width: number;
-  thickness: number;
+  height?: number;
+  width?: number;
+  thickness?: number;
   method?: string;
   confidence?: number;
 }
@@ -37,4 +37,17 @@ export interface UserCopy {
 export interface UserCopyWithEdition extends UserCopy {
   edition: Edition;
   work: Work;
+}
+
+export interface Provenance {
+  source: string;
+  source_url: string;
+}
+
+export interface WorkCandidate extends Work {
+  provenance: Provenance;
+}
+
+export interface EditionCandidate extends Edition {
+  provenance: Provenance;
 }

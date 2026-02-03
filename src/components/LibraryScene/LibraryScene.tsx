@@ -447,9 +447,9 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         if (cancelled || !app) return;
         if (containerRef.current !== container) return;
 
-        updateBooksRef.current = (visible: boolean, data: UserCopyWithEdition[]) => {
+        updateBooksRef.current = (_visible: boolean, data: UserCopyWithEdition[]) => {
           booksLayer.removeChildren();
-          if (visible && data.length > 0) {
+          if (data.length > 0) {
             renderBooksLayer(booksLayer, metrics, data, 0, 0);
           }
           ensureLayerOrder();
@@ -956,6 +956,15 @@ export const LibraryScene = forwardRef<LibrarySceneRef, LibrarySceneProps>(
         container.addEventListener("touchend", onTouchEnd, { passive: true });
 
         const onKeyDown = (e: KeyboardEvent) => {
+          const target = e.target as Element | null;
+          if (
+            target instanceof HTMLInputElement ||
+            target instanceof HTMLTextAreaElement ||
+            (target instanceof HTMLElement && target.isContentEditable)
+          ) {
+            return;
+          }
+
           if (e.key === "Escape") {
             e.preventDefault();
             if (isMarqueeDragging) {

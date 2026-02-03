@@ -4,6 +4,95 @@ import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { DebugCellsPanel } from "@/components/DebugCellsPanel";
 import { LibraryScene, type LibrarySceneRef } from "@/components/LibraryScene";
 import { useBooksStore, computeUserCopiesWithEdition } from "@/lib/books";
+import type { WorkCandidate, EditionCandidate } from "@/lib/books/types";
+
+function BookDetailsCard({
+  work,
+  edition,
+  onAdd,
+  onClose,
+}: {
+  work: WorkCandidate;
+  edition: EditionCandidate;
+  onAdd: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  const img = edition.images;
+  const coverSrc = img?.large || img?.medium || img?.thumbnail || img?.small;
+
+  return (
+    <div className="rounded-xl bg-zinc-800 shadow-lg max-w-xs overflow-hidden">
+      {/* Close button */}
+      <div className="flex justify-end p-2 pb-0">
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-6 h-6 flex items-center justify-center rounded hover:bg-white/20 text-white/60 hover:text-white text-lg leading-none"
+          title="Close"
+        >
+          ×
+        </button>
+      </div>
+      <div className="flex gap-3 px-3 pb-3">
+        {/* Cover */}
+        <div className="shrink-0">
+          {coverSrc ? (
+            <img
+              src={coverSrc}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="w-24 h-36 object-cover rounded-md bg-white/10"
+            />
+          ) : (
+            <div className="w-24 h-36 rounded-md bg-white/10 flex items-center justify-center text-white/40 text-xs">
+              No cover
+            </div>
+          )}
+        </div>
+        {/* Details */}
+        <div className="flex-1 min-w-0 text-white text-xs space-y-1">
+          <h2 className="font-semibold text-sm leading-tight">{work.title}</h2>
+          {work.authors?.length > 0 && (
+            <p className="text-white/80">{work.authors.join(", ")}</p>
+          )}
+          <div className="text-white/60 space-y-0.5">
+            {edition.year != null && <p>Year: {edition.year}</p>}
+            {edition.publisher && <p>Publisher: {edition.publisher}</p>}
+            {edition.pageCount != null && <p>Pages: {edition.pageCount}</p>}
+            {edition.isbn && <p>ISBN: {edition.isbn}</p>}
+            <p className="capitalize">Source: {edition.provenance?.source || "unknown"}</p>
+          </div>
+          {work.description && (
+            <div className="mt-1">
+              <p className="text-white/50 mb-0.5">Description:</p>
+              <p className="text-white/80 max-h-20 overflow-y-auto leading-relaxed">
+                {work.description}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+      {/* Add button */}
+      <div className="px-3 pb-3">
+        <button
+          type="button"
+          onClick={onAdd}
+          className="w-full py-1.5 rounded bg-green-600 hover:bg-green-500 text-white text-xs"
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   const sceneRef = useRef<LibrarySceneRef>(null);
@@ -23,6 +112,17 @@ export default function Home() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [debugDirty, setDebugDirty] = useState(0);
   const [controlsExpanded, setControlsExpanded] = useState(true);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<
+    Array<{ work: WorkCandidate; edition: EditionCandidate }>
+  >([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [selectedCandidate, setSelectedCandidate] = useState<{
+    work: WorkCandidate;
+    edition: EditionCandidate;
+  } | null>(null);
 
   const demoBooksVisible = useBooksStore((s) => s.demoVisible);
   const works = useBooksStore((s) => s.works);
@@ -73,6 +173,44 @@ export default function Home() {
       setConfirmDelete({ n, perform });
     },
     []
+  );
+
+  const handleSearch = useCallback(async () => {
+    const q = searchQuery.trim();
+    if (!q) return;
+    setSearchLoading(true);
+    setSearchError(null);
+    try {
+      const res = await fetch(`/api/books/search?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (data.error) {
+        setSearchError(data.error);
+        setSearchResults([]);
+      } else {
+        const candidates = (data.editions as EditionCandidate[])
+          .map((edition) => {
+            const work = (data.works as WorkCandidate[]).find(
+              (w) => w.id === edition.workId
+            );
+            return work ? { work, edition } : null;
+          })
+          .filter((x): x is { work: WorkCandidate; edition: EditionCandidate } => x !== null);
+        setSearchResults(candidates);
+      }
+    } catch (e) {
+      setSearchError(e instanceof Error ? e.message : "Search failed");
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [searchQuery]);
+
+  const handleAddCandidate = useCallback(
+    (work: WorkCandidate, edition: EditionCandidate) => {
+      useBooksStore.getState().addFromCandidate(work, edition);
+      showToast("Book added");
+    },
+    [showToast]
   );
 
   // Keyboard shortcut for mode toggle (E key)
@@ -240,6 +378,93 @@ export default function Home() {
           </button>
         </div>
 
+        {/* Book Search */}
+        <div className="rounded bg-black/60 text-white text-xs overflow-hidden max-w-xs">
+          <div className="px-3 py-2 font-medium border-b border-white/20">
+            Book Search
+          </div>
+          <div className="p-3 space-y-2">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                placeholder="Title, author..."
+                className="flex-1 px-2 py-1.5 rounded bg-white/10 border border-white/20 text-sm text-white placeholder-white/50 focus:outline-none focus:border-white/40"
+              />
+              <button
+                type="button"
+                onClick={handleSearch}
+                disabled={searchLoading}
+                className="px-3 py-1.5 rounded bg-white/20 hover:bg-white/30 disabled:opacity-50 text-sm"
+              >
+                {searchLoading ? "..." : "Search"}
+              </button>
+            </div>
+            {searchError && (
+              <p className="text-red-400 text-xs">{searchError}</p>
+            )}
+            {searchResults.length > 0 && (
+              <ul className="space-y-2 max-h-48 overflow-y-auto">
+                {searchResults.map(({ work, edition }) => (
+                  <li
+                    key={edition.id}
+                    onClick={() => setSelectedCandidate({ work, edition })}
+                    className="flex items-start justify-between gap-2 py-1.5 border-b border-white/10 last:border-0 cursor-pointer hover:bg-white/5 rounded"
+                  >
+                    {(() => {
+                      const img = edition.images;
+                      const src = img?.thumbnail || img?.small || img?.medium || img?.large;
+                      return src ? (
+                        <img
+                          src={src}
+                          alt=""
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          className="shrink-0 w-10 h-14 object-cover rounded-md bg-white/10"
+                        />
+                      ) : (
+                        <div className="shrink-0 w-10 h-14 rounded-md bg-white/10" />
+                      );
+                    })()}
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium truncate">{work.title}</div>
+                      <div className="text-white/70 truncate">
+                        {work.authors?.join(", ")}
+                        {edition.year != null && ` · ${edition.year}`}
+                        {edition.isbn && ` · ${edition.isbn}`}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleAddCandidate(work, edition);
+                      }}
+                      className="shrink-0 px-2 py-1 rounded bg-green-600/80 hover:bg-green-600 text-xs"
+                    >
+                      Add
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {/* Book Details Card - inline */}
+            {selectedCandidate && (
+              <BookDetailsCard
+                work={selectedCandidate.work}
+                edition={selectedCandidate.edition}
+                onAdd={() => {
+                  handleAddCandidate(selectedCandidate.work, selectedCandidate.edition);
+                  setSelectedCandidate(null);
+                }}
+                onClose={() => setSelectedCandidate(null)}
+              />
+            )}
+          </div>
+        </div>
+
         {/* Controls Help Panel */}
         <div className="rounded bg-black/60 text-white text-xs overflow-hidden max-w-xs">
           <button
@@ -332,6 +557,7 @@ export default function Home() {
           {toastMessage}
         </div>
       )}
+
 
       {/* Debug cells panel */}
       <DebugCellsPanel

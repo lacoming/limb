@@ -39,6 +39,7 @@ export function renderBooksLayer(
   const innerTop = cellY + INSET_TOP;
   const innerBottom = cellY + CELL_H - INSET_BOTTOM;
   const innerHeight = innerBottom - innerTop;
+  const innerWidth = innerRight - innerLeft;
 
   const PX_PER_MM = innerHeight / COMPARTMENT_HEIGHT_MM;
 
@@ -46,12 +47,15 @@ export function renderBooksLayer(
 
   for (let i = 0; i < books.length; i++) {
     const book = books[i];
-    const { dimensionsMm } = book.edition;
-    const thicknessPx = dimensionsMm.thickness * PX_PER_MM;
-    const bookHeightPx = dimensionsMm.height * PX_PER_MM;
-    const scaleUniform = Math.min(1, innerHeight / bookHeightPx);
-    const w = thicknessPx * scaleUniform;
-    const h = bookHeightPx * scaleUniform;
+    const { dimensionsMm, pageCount } = book.edition;
+    // Calculate thickness: use provided value, or estimate from pageCount (~0.05mm/page), or fallback to 25mm
+    const thicknessMm = dimensionsMm.thickness ?? (pageCount ? pageCount * 0.05 : 25);
+    const heightMm = dimensionsMm.height ?? 210;
+    const thicknessPx = thicknessMm * PX_PER_MM;
+    const bookHeightPx = heightMm * PX_PER_MM;
+    const scaleH = Math.min(1, innerHeight / bookHeightPx);
+    const w = Math.max(2, Math.min(thicknessPx, innerWidth));
+    const h = bookHeightPx * scaleH;
 
     if (bookX + w > innerRight) break;
 
