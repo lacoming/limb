@@ -82,6 +82,7 @@ export function updateSelectionOverlay(
       }
 
       const selectionG = new Graphics();
+      selectionG.eventMode = "none";
       selectionG.rect(selX, selY, CELL_W, CELL_H);
       selectionG.fill({ color: SELECTION_COLOR, alpha: SELECTION_ALPHA });
       overlay.addChild(selectionG);
@@ -179,6 +180,7 @@ export function updateSelectionOverlay(
         CELL_H
       );
       const multiG = new Graphics();
+      multiG.eventMode = "none";
       multiG.rect(loc.x, loc.y, CELL_W, CELL_H);
       multiG.fill({ color: SELECTION_COLOR, alpha: MULTI_SELECTION_ALPHA });
       overlay.addChild(multiG);
@@ -191,6 +193,7 @@ export function updateSelectionOverlay(
     const w = marqueeRect.maxX - marqueeRect.minX;
     const h = marqueeRect.maxY - marqueeRect.minY;
     const marqueeG = new Graphics();
+    marqueeG.eventMode = "none";
     marqueeG.rect(marqueeRect.minX, marqueeRect.minY, w, h);
     marqueeG.fill({ color: MARQUEE_COLOR, alpha: MARQUEE_ALPHA });
     overlay.addChild(marqueeG);

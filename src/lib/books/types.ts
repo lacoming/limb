@@ -14,6 +14,13 @@ export interface DimensionsMm {
   confidence?: number;
 }
 
+export interface SpineImage {
+  url: string;
+  w: number;
+  h: number;
+  source: "user_photo";
+}
+
 export interface Edition {
   id: string;
   workId: string;
@@ -23,6 +30,7 @@ export interface Edition {
   pageCount?: number;
   dimensionsMm: DimensionsMm;
   images?: Record<string, string>;
+  spineImage?: SpineImage;
 }
 
 export interface UserCopy {

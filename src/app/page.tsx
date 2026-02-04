@@ -4,19 +4,28 @@ import { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } fr
 import { DebugCellsPanel } from "@/components/DebugCellsPanel";
 import { LibraryScene, type LibrarySceneRef } from "@/components/LibraryScene";
 import { useBooksStore, computeUserCopiesWithEdition } from "@/lib/books";
-import type { WorkCandidate, EditionCandidate } from "@/lib/books/types";
+import { fetchByIsbnOpenLibrary } from "@/lib/books/adapters/openLibrary";
+import type { WorkCandidate, EditionCandidate, SpineImage } from "@/lib/books/types";
 
 function BookDetailsCard({
   work,
   edition,
   onAdd,
   onClose,
+  spineOverride,
+  onSpineUpload,
 }: {
   work: WorkCandidate;
   edition: EditionCandidate;
   onAdd: () => void;
   onClose: () => void;
+  spineOverride?: SpineImage;
+  onSpineUpload: (editionId: string, file: File) => void;
 }) {
+  const [spineError, setSpineError] = useState<string | null>(null);
+  const [spineUploading, setSpineUploading] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -24,6 +33,45 @@ function BookDetailsCard({
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, [onClose]);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSpineError(null);
+    setSpineUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/spine/extract", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setSpineError(data.error || "Upload failed");
+      } else {
+        onSpineUpload(edition.id, file);
+        // Store the result - parent will handle via callback
+        const spineData: SpineImage = {
+          url: data.url,
+          w: data.w,
+          h: data.h,
+          source: "user_photo",
+        };
+        // Call parent with spine data
+        (onSpineUpload as (id: string, file: File, spine?: SpineImage) => void)(
+          edition.id,
+          file,
+          spineData
+        );
+      }
+    } catch {
+      setSpineError("Upload failed");
+    } finally {
+      setSpineUploading(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
 
   const img = edition.images;
   const coverSrc = img?.large || img?.medium || img?.thumbnail || img?.small;
@@ -80,6 +128,30 @@ function BookDetailsCard({
           )}
         </div>
       </div>
+      {/* Spine upload */}
+      <div className="px-3 pb-2">
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleFileChange}
+          className="hidden"
+        />
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={spineUploading}
+          className="w-full py-1.5 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs"
+        >
+          {spineUploading ? "Uploading..." : spineOverride ? "Change spine photo" : "Upload spine photo"}
+        </button>
+        {spineOverride && (
+          <p className="text-green-400 text-xs mt-1">Spine photo uploaded</p>
+        )}
+        {spineError && (
+          <p className="text-red-400 text-xs mt-1">{spineError}</p>
+        )}
+      </div>
       {/* Add button */}
       <div className="px-3 pb-3">
         <button
@@ -123,6 +195,7 @@ export default function Home() {
     work: WorkCandidate;
     edition: EditionCandidate;
   } | null>(null);
+  const [spineOverrides, setSpineOverrides] = useState<Map<string, SpineImage>>(new Map());
   const selectedRowRef = useRef<HTMLDivElement>(null);
   const listContainerRef = useRef<HTMLUListElement>(null);
   const detailsHostRef = useRef<HTMLDivElement>(null);
@@ -238,12 +311,36 @@ export default function Home() {
     }
   }, [searchQuery]);
 
+  const handleSpineUpload = useCallback(
+    (_editionId: string, _file: File, spine?: SpineImage) => {
+      if (spine && selectedCandidate) {
+        setSpineOverrides((prev) => new Map(prev).set(selectedCandidate.edition.id, spine));
+      }
+    },
+    [selectedCandidate]
+  );
+
   const handleAddCandidate = useCallback(
-    (work: WorkCandidate, edition: EditionCandidate) => {
-      useBooksStore.getState().addFromCandidate(work, edition);
+    async (work: WorkCandidate, edition: EditionCandidate) => {
+      let finalEdition = edition;
+      // Fetch exact pageCount via ISBN lookup (priority over median from search)
+      if (finalEdition.isbn && finalEdition.provenance?.source === "openlibrary") {
+        try {
+          const { editions } = await fetchByIsbnOpenLibrary(finalEdition.isbn);
+          const found = editions[0];
+          if (found?.pageCount != null) {
+            finalEdition = { ...finalEdition, pageCount: found.pageCount };
+          }
+        } catch {
+          // ignore lookup errors, use median from search as fallback
+        }
+      }
+      const spineImage = spineOverrides.get(edition.id);
+      const editionWithSpine = spineImage ? { ...finalEdition, spineImage } : finalEdition;
+      useBooksStore.getState().addFromCandidate(work, editionWithSpine);
       showToast("Book added");
     },
-    [showToast]
+    [showToast, spineOverrides]
   );
 
   // Keyboard shortcut for mode toggle (E key)
@@ -471,6 +568,7 @@ export default function Home() {
                             <div className="text-white/70 truncate">
                               {work.authors?.join(", ")}
                               {edition.year != null && ` · ${edition.year}`}
+                              {edition.pageCount != null && ` · ${edition.pageCount}p`}
                               {edition.isbn && ` · ${edition.isbn}`}
                             </div>
                           </div>
@@ -501,6 +599,8 @@ export default function Home() {
                       setSelectedCandidate(null);
                     }}
                     onClose={() => setSelectedCandidate(null)}
+                    spineOverride={spineOverrides.get(selectedCandidate.edition.id)}
+                    onSpineUpload={handleSpineUpload}
                   />
                 </div>
               )}
@@ -525,6 +625,8 @@ export default function Home() {
                     setSelectedCandidate(null);
                   }}
                   onClose={() => setSelectedCandidate(null)}
+                  spineOverride={spineOverrides.get(selectedCandidate.edition.id)}
+                  onSpineUpload={handleSpineUpload}
                 />
               </div>
             )}

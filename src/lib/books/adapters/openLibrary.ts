@@ -46,10 +46,19 @@ function extractYear(dateStr: string | undefined): number | undefined {
   return m ? parseInt(m[0], 10) : undefined;
 }
 
+function pickIsbn(isbns: string[] | undefined): string | undefined {
+  if (!isbns || isbns.length === 0) return undefined;
+  const isbn13 = isbns.find((i) => /^\d{13}$/.test(i));
+  if (isbn13) return isbn13;
+  const isbn10 = isbns.find((i) => /^\d{10}$/.test(i));
+  if (isbn10) return isbn10;
+  return isbns[0];
+}
+
 export async function searchOpenLibrary(
   q: string
 ): Promise<{ works: WorkCandidate[]; editions: EditionCandidate[] }> {
-  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=10`;
+  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=10&fields=key,title,author_name,first_publish_year,cover_i,cover_edition_key,edition_key,isbn,number_of_pages_median`;
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Open Library search failed: ${res.status}`);
@@ -86,7 +95,7 @@ export async function searchOpenLibrary(
     const edition: EditionCandidate = {
       id: editionId,
       workId,
-      isbn: doc.isbn?.[0],
+      isbn: pickIsbn(doc.isbn),
       year: doc.first_publish_year,
       pageCount: doc.number_of_pages_median,
       dimensionsMm: {

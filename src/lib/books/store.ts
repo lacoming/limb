@@ -10,11 +10,11 @@ const FALLBACK_DIMENSIONS = {
 };
 
 function estimateThicknessFromPages(pageCount: number): number {
-  const sheetMm = 0.09;
-  const coverMm = 0.5;
-  const bindingAllowanceMm = 1.0;
-  const thickness = (pageCount / 2) * sheetMm + coverMm + bindingAllowanceMm;
-  return Math.round(thickness * 10) / 10;
+  // ~5mm per 100 pages + 1.5mm base offset
+  const thickness = pageCount * 0.05 + 1.5;
+  // Clamp: min 3mm, max 80mm
+  const clamped = Math.max(3, Math.min(80, thickness));
+  return Math.round(clamped * 10) / 10;
 }
 
 interface BooksState {
@@ -110,33 +110,14 @@ export const useBooksStore = create<BooksState>()((set, get) => ({
     const state = get();
     const baseDims = edition.dimensionsMm ?? {};
 
-    const isFallbackThickness =
-      baseDims.method === "fallback" ||
-      (typeof baseDims.confidence === "number" && baseDims.confidence <= 0.3) ||
-      (baseDims.thickness === FALLBACK_DIMENSIONS.thickness &&
-        baseDims.method == null);
-
     const height = baseDims.height ?? FALLBACK_DIMENSIONS.height;
     const width = baseDims.width ?? FALLBACK_DIMENSIONS.width;
-    let thickness = baseDims.thickness;
-    let method = baseDims.method;
-    let confidence = baseDims.confidence;
-
-    if (thickness == null) {
-      if (edition.pageCount && edition.pageCount > 0) {
-        thickness = estimateThicknessFromPages(edition.pageCount);
-        method = "estimated_from_pages";
-        confidence = 0.6;
-      } else {
-        thickness = FALLBACK_DIMENSIONS.thickness;
-        method = FALLBACK_DIMENSIONS.method;
-        confidence = FALLBACK_DIMENSIONS.confidence;
-      }
-    } else if (isFallbackThickness && edition.pageCount && edition.pageCount > 0) {
-      thickness = estimateThicknessFromPages(edition.pageCount);
-      method = "estimated_from_pages";
-      confidence = 0.6;
-    }
+    // Thickness ONLY from pageCount; fallback = 3mm (min)
+    const pc = typeof edition.pageCount === "number" ? edition.pageCount : NaN;
+    const hasValidPageCount = Number.isFinite(pc) && pc > 0;
+    const thickness = hasValidPageCount ? estimateThicknessFromPages(pc) : 3;
+    const method = hasValidPageCount ? "estimated_from_pages" : "no_pagecount_fallback";
+    const confidence = hasValidPageCount ? 0.6 : 0.1;
 
     const finalDimensions = {
       height,

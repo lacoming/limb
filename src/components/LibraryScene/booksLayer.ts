@@ -2,9 +2,38 @@
  * Books layer: renders user books as Graphics in worldContent.
  * Does not trigger shelf rebuild/bake.
  */
-import { Container, Graphics, Text, TextStyle } from "pixi.js";
+import { Container, Graphics, Text, TextStyle, Sprite, Texture, Assets } from "pixi.js";
 import type { ShelfMetrics } from "../../lib/shelfMetrics";
 import type { UserCopyWithEdition } from "../../lib/books/types";
+
+// Texture cache for spine images (loaded once, reused)
+const spineTextureCache = new Map<string, Texture>();
+const loadingTextures = new Set<string>();
+const failedSpineTextures = new Set<string>();
+
+async function getSpineTexture(url: string): Promise<Texture | null> {
+  if (failedSpineTextures.has(url)) {
+    return null; // Already failed, don't retry
+  }
+  if (spineTextureCache.has(url)) {
+    return spineTextureCache.get(url)!;
+  }
+  if (loadingTextures.has(url)) {
+    return null; // Still loading
+  }
+  loadingTextures.add(url);
+  try {
+    const texture = await Assets.load(url);
+    spineTextureCache.set(url, texture);
+    return texture;
+  } catch (e) {
+    console.error("Failed to load spine texture:", url, e);
+    failedSpineTextures.add(url);
+    return null;
+  } finally {
+    loadingTextures.delete(url);
+  }
+}
 
 const COMPARTMENT_HEIGHT_MM = 240;
 const BOOK_PADDING_PX = 3;
@@ -147,43 +176,64 @@ export function renderBooksLayer(
       g.roundRect(0, 0, w, h, 4).fill({ color });
       bookContainer.addChild(g);
 
-      const title = book.work?.title ?? "";
-      const availH = h - TITLE_PADDING * 2;
-      const availW = w - TITLE_PADDING * 2;
+      // If spine image exists, try to render it
+      const spineUrl = book.edition.spineImage?.url;
+      if (spineUrl) {
+        const cachedTexture = spineTextureCache.get(spineUrl);
+        if (cachedTexture) {
+          const sprite = new Sprite(cachedTexture);
+          sprite.width = w;
+          sprite.height = h;
+          // Use existing g as mask for rounded corners (no extra Graphics)
+          sprite.mask = g;
+          bookContainer.addChild(sprite);
+        } else if (!failedSpineTextures.has(spineUrl)) {
+          // Trigger async load (will render on next rebuild)
+          getSpineTexture(spineUrl);
+        }
+      }
 
-      const measureText = (txt: string, fontSize: number) => {
-        const style = new TextStyle({
-          ...TITLE_STYLE_BASE,
-          fontSize,
-          lineHeight: fontSize * LINE_HEIGHT,
-          align: "center",
-        });
-        const t = new Text({ text: txt, style });
-        const result = { width: t.width, height: t.height };
-        t.destroy();
-        return result;
-      };
+      // Only render title text if no custom spine image is loaded
+      const hasSpineTexture = spineUrl && spineTextureCache.has(spineUrl);
+      if (!hasSpineTexture) {
+        const title = book.work?.title ?? "";
+        const availH = h - TITLE_PADDING * 2;
+        const availW = w - TITLE_PADDING * 2;
 
-      const fit = fitTitle(title, availH, availW, measureText);
+        const measureText = (txt: string, fontSize: number) => {
+          const style = new TextStyle({
+            ...TITLE_STYLE_BASE,
+            fontSize,
+            lineHeight: fontSize * LINE_HEIGHT,
+            align: "center",
+          });
+          const t = new Text({ text: txt, style });
+          const result = { width: t.width, height: t.height };
+          t.destroy();
+          return result;
+        };
 
-      if (fit) {
-        const style = new TextStyle({
-          ...TITLE_STYLE_BASE,
-          fontSize: fit.fontSize,
-          lineHeight: fit.fontSize * LINE_HEIGHT,
-          align: "center",
-        });
-        const text = new Text({ text: fit.text, style });
-        text.anchor.set(0.5, 0.5);
-        text.rotation = -Math.PI / 2;
-        text.position.set(w / 2, h / 2);
+        const fit = fitTitle(title, availH, availW, measureText);
 
-        const mask = new Graphics();
-        mask.rect(TITLE_PADDING, TITLE_PADDING, availW, availH).fill({ color: 0xffffff });
-        bookContainer.addChild(mask);
-        text.mask = mask;
+        if (fit) {
+          const style = new TextStyle({
+            ...TITLE_STYLE_BASE,
+            fontSize: fit.fontSize,
+            lineHeight: fit.fontSize * LINE_HEIGHT,
+            align: "center",
+          });
+          const text = new Text({ text: fit.text, style });
+          text.anchor.set(0.5, 0.5);
+          text.rotation = -Math.PI / 2;
+          text.position.set(w / 2, h / 2);
 
-        bookContainer.addChild(text);
+          const mask = new Graphics();
+          mask.rect(TITLE_PADDING, TITLE_PADDING, availW, availH).fill({ color: 0xffffff });
+          bookContainer.addChild(mask);
+          text.mask = mask;
+
+          bookContainer.addChild(text);
+        }
       }
 
       container.addChild(bookContainer);
