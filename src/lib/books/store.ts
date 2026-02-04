@@ -17,6 +17,12 @@ function estimateThicknessFromPages(pageCount: number): number {
   return Math.round(clamped * 10) / 10;
 }
 
+interface LibraryData {
+  works: Work[];
+  editions: Edition[];
+  userCopies: UserCopy[];
+}
+
 interface BooksState {
   works: Work[];
   editions: Edition[];
@@ -28,6 +34,8 @@ interface BooksState {
   toggleDemo: () => void;
   addFromCandidate: (work: Work, edition: Edition) => void;
   setActivePlacement: (placement: { gx: number; gy: number } | null) => void;
+  serialize: () => LibraryData;
+  hydrate: (data: LibraryData) => void;
 }
 
 const DEMO_WORK: Work = {
@@ -81,6 +89,19 @@ export const useBooksStore = create<BooksState>()((set, get) => ({
 
   setActivePlacement: (placement) => set({ activePlacement: placement }),
 
+  serialize: () => {
+    const { works, editions, userCopies } = get();
+    return { works, editions, userCopies };
+  },
+
+  hydrate: (data) => {
+    set({
+      works: data.works ?? [],
+      editions: data.editions ?? [],
+      userCopies: data.userCopies ?? [],
+    });
+  },
+
   loadDemo: () =>
     set({
       works: [DEMO_WORK],
@@ -112,12 +133,33 @@ export const useBooksStore = create<BooksState>()((set, get) => ({
 
     const height = baseDims.height ?? FALLBACK_DIMENSIONS.height;
     const width = baseDims.width ?? FALLBACK_DIMENSIONS.width;
-    // Thickness ONLY from pageCount; fallback = 3mm (min)
-    const pc = typeof edition.pageCount === "number" ? edition.pageCount : NaN;
-    const hasValidPageCount = Number.isFinite(pc) && pc > 0;
-    const thickness = hasValidPageCount ? estimateThicknessFromPages(pc) : 3;
-    const method = hasValidPageCount ? "estimated_from_pages" : "no_pagecount_fallback";
-    const confidence = hasValidPageCount ? 0.6 : 0.1;
+
+    // Thickness from spineImage if available, else from pageCount
+    let thickness: number;
+    let method: string;
+    let confidence: number;
+
+    const spineW = edition.spineImage?.w;
+    const spineH = edition.spineImage?.h;
+    const hasValidSpine =
+      typeof spineW === "number" &&
+      typeof spineH === "number" &&
+      spineW > 0 &&
+      spineH > 0;
+
+    if (hasValidSpine) {
+      // thickness = heightMm * (spineW / spineH), clamped to [3, 80]
+      const rawThickness = height * (spineW / spineH);
+      thickness = Math.max(3, Math.min(80, Math.round(rawThickness * 10) / 10));
+      method = "from_spine_image";
+      confidence = 0.9;
+    } else {
+      const pc = typeof edition.pageCount === "number" ? edition.pageCount : NaN;
+      const hasValidPageCount = Number.isFinite(pc) && pc > 0;
+      thickness = hasValidPageCount ? estimateThicknessFromPages(pc) : 3;
+      method = hasValidPageCount ? "estimated_from_pages" : "no_pagecount_fallback";
+      confidence = hasValidPageCount ? 0.6 : 0.1;
+    }
 
     const finalDimensions = {
       height,

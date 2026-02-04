@@ -1,0 +1,106 @@
+{
+  "works": [
+    {
+      "id": "ol-work:OL151411W",
+      "title": "Alice's Adventures in Wonderland / Through the Looking Glass",
+      "authors": [
+        "Lewis Carroll"
+      ],
+      "provenance": {
+        "source": "openlibrary",
+        "source_url": "https://openlibrary.org/works/OL151411W"
+      }
+    },
+    {
+      "id": "photo-work:1770240811731",
+      "title": "Преступление и наказание",
+      "authors": [
+        "Федор Михайлович Достоевский"
+      ],
+      "provenance": {
+        "source": "photo_ai",
+        "source_url": ""
+      }
+    }
+  ],
+  "editions": [
+    {
+      "id": "ol-edition:OL25129289M",
+      "workId": "ol-work:OL151411W",
+      "isbn": "9781850381563",
+      "year": 1889,
+      "pageCount": 277,
+      "dimensionsMm": {
+        "height": 210,
+        "width": 145,
+        "thickness": 15.4,
+        "method": "estimated_from_pages",
+        "confidence": 0.6
+      },
+      "images": {
+        "small": "https://covers.openlibrary.org/b/id/8595966-S.jpg",
+        "medium": "https://covers.openlibrary.org/b/id/8595966-M.jpg",
+        "large": "https://covers.openlibrary.org/b/id/8595966-L.jpg"
+      },
+      "provenance": {
+        "source": "openlibrary",
+        "source_url": "https://openlibrary.org/books/OL25129289M"
+      },
+      "spineImage": {
+        "url": "/uploads/spines/1770239719020_fenmym.png",
+        "w": 0,
+        "h": 0,
+        "source": "user_photo"
+      }
+    },
+    {
+      "id": "photo-edition:1770240811731",
+      "workId": "photo-work:1770240811731",
+      "dimensionsMm": {
+        "height": 210,
+        "width": 145,
+        "thickness": 3,
+        "method": "no_pagecount_fallback",
+        "confidence": 0.1
+      },
+      "provenance": {
+        "source": "photo_ai",
+        "source_url": ""
+      }
+    }
+  ],
+  "userCopies": [
+    {
+      "id": "copy_ol-edition:OL25129289M_1770239707105",
+      "editionId": "ol-edition:OL25129289M",
+      "placement": {
+        "gx": 0,
+        "gy": 0
+      }
+    },
+    {
+      "id": "copy_ol-edition:OL25129289M_1770239723204",
+      "editionId": "ol-edition:OL25129289M",
+      "placement": {
+        "gx": 0,
+        "gy": 0
+      }
+    },
+    {
+      "id": "copy_ol-edition:OL25129289M_1770239725254",
+      "editionId": "ol-edition:OL25129289M",
+      "placement": {
+        "gx": 0,
+        "gy": 0
+      }
+    },
+    {
+      "id": "copy_photo-edition:1770240811731_1770240811732",
+      "editionId": "photo-edition:1770240811731",
+      "placement": {
+        "gx": 0,
+        "gy": 0
+      }
+    }
+  ]
+}

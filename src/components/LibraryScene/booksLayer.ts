@@ -182,8 +182,12 @@ export function renderBooksLayer(
         const cachedTexture = spineTextureCache.get(spineUrl);
         if (cachedTexture) {
           const sprite = new Sprite(cachedTexture);
-          sprite.width = w;
-          sprite.height = h;
+          // Uniform scale by height to preserve aspect ratio (no stretching)
+          const scale = h / cachedTexture.height;
+          sprite.scale.set(scale);
+          // Center horizontally within book thickness
+          sprite.x = (w - sprite.width) / 2;
+          sprite.y = 0;
           // Use existing g as mask for rounded corners (no extra Graphics)
           sprite.mask = g;
           bookContainer.addChild(sprite);

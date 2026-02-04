@@ -5,11 +5,120 @@ import path from "path";
 
 const UPLOADS_DIR = path.join(process.cwd(), "public/uploads/spines");
 const MIN_ASPECT_RATIO = 1.2;
-const ANALYSIS_HEIGHT = 600;
-const MIN_WIDTH_RATIO = 0.06;
-const MAX_WIDTH_RATIO = 0.25;
-const SCORE_THRESHOLD = 1.5;
+const ANALYSIS_HEIGHT = 700;
+const MIN_WIDTH_RATIO = 0.04;
+const MAX_WIDTH_RATIO = 0.30;
+const SCORE_THRESHOLD = 1.3;
 const SMOOTH_WINDOW = 15;
+const STDDEV_PENALTY_WEIGHT = 0.3;
+
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
+const AI_MIN_WIDTH_RATIO = 0.04;
+const AI_MAX_WIDTH_RATIO = 0.35;
+const AI_MIN_CONFIDENCE = 0.5;
+
+interface AIBbox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface AIResponse {
+  ok: boolean;
+  bbox?: AIBbox;
+  confidence?: number;
+  reason?: string;
+}
+
+async function tryAICrop(
+  base64Image: string,
+  mimeType: string,
+  imgWidth: number,
+  imgHeight: number
+): Promise<AIBbox | null> {
+  if (!OPENROUTER_API_KEY) return null;
+
+  try {
+    const dataUrl = `data:${mimeType};base64,${base64Image}`;
+    const prompt = `You are a spine detector. The image shows a book (photo of cover or full book). Find the SPINE region (the narrow vertical strip where pages are bound).
+
+Return ONLY valid JSON, no other text:
+If spine found: {"ok":true,"bbox":{"left":N,"top":N,"width":N,"height":N},"confidence":0.0-1.0}
+If not found: {"ok":false,"reason":"..."}
+
+bbox values must be in PIXELS for this image (${imgWidth}x${imgHeight}). The spine is typically a narrow vertical rectangle.`;
+
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-4o-mini",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: dataUrl } },
+            ],
+          },
+        ],
+        max_tokens: 200,
+      }),
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content ?? "";
+
+    // Extract JSON from response
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    const parsed: AIResponse = JSON.parse(jsonMatch[0]);
+    if (!parsed.ok || !parsed.bbox) return null;
+
+    const { bbox, confidence = 0 } = parsed;
+
+    // Validate confidence
+    if (confidence < AI_MIN_CONFIDENCE) return null;
+
+    // Validate bbox values
+    if (
+      typeof bbox.left !== "number" ||
+      typeof bbox.top !== "number" ||
+      typeof bbox.width !== "number" ||
+      typeof bbox.height !== "number"
+    )
+      return null;
+
+    if (bbox.width <= 0 || bbox.height <= 0) return null;
+
+    // Validate bbox within image bounds
+    if (
+      bbox.left < 0 ||
+      bbox.top < 0 ||
+      bbox.left + bbox.width > imgWidth ||
+      bbox.top + bbox.height > imgHeight
+    )
+      return null;
+
+    // Validate aspect ratio (height/width >= 1.2)
+    if (bbox.height / bbox.width < MIN_ASPECT_RATIO) return null;
+
+    // Validate width ratio (4%-35% of image width)
+    const widthRatio = bbox.width / imgWidth;
+    if (widthRatio < AI_MIN_WIDTH_RATIO || widthRatio > AI_MAX_WIDTH_RATIO) return null;
+
+    return bbox;
+  } catch {
+    return null;
+  }
+}
 
 type SharpModule = typeof import("sharp");
 
@@ -69,12 +178,30 @@ function smoothArray(arr: number[], window: number): number[] {
   return result;
 }
 
+function computeStdDev(arr: number[], start: number, end: number): number {
+  if (end <= start) return 0;
+  let sum = 0;
+  for (let i = start; i < end; i++) {
+    sum += arr[i];
+  }
+  const mean = sum / (end - start);
+  let variance = 0;
+  for (let i = start; i < end; i++) {
+    variance += (arr[i] - mean) ** 2;
+  }
+  return Math.sqrt(variance / (end - start));
+}
+
 function findBestSpineRange(
   gradient: number[],
+  brightness: number[],
   width: number
 ): { x1: number; x2: number; score: number } | null {
   const minW = Math.floor(width * MIN_WIDTH_RATIO);
   const maxW = Math.floor(width * MAX_WIDTH_RATIO);
+
+  // Compute global stddev for normalization
+  const globalStdDev = computeStdDev(brightness, 0, brightness.length) || 1;
 
   let best: { x1: number; x2: number; score: number } | null = null;
 
@@ -84,7 +211,14 @@ function findBestSpineRange(
       // Score = edge strength at boundaries
       const leftEdge = gradient[x1] ?? 0;
       const rightEdge = gradient[x2] ?? 0;
-      const score = leftEdge + rightEdge;
+      const edgeScore = leftEdge + rightEdge;
+
+      // Penalty for high variance inside the range (spines are usually uniform)
+      const innerStdDev = computeStdDev(brightness, x1, x2);
+      const normalizedStdDev = innerStdDev / globalStdDev;
+      const penalty = normalizedStdDev * STDDEV_PENALTY_WEIGHT * edgeScore;
+
+      const score = edgeScore - penalty;
 
       if (!best || score > best.score) {
         best = { x1, x2, score };
@@ -116,6 +250,51 @@ function validateSpineRange(
   return true;
 }
 
+// Second pass: refine edges by finding gradient peaks near boundaries
+function refineSpineEdges(
+  gradient: number[],
+  x1: number,
+  x2: number,
+  padding: number = 4
+): { x1: number; x2: number } {
+  const width = x2 - x1;
+  const searchZone = Math.max(3, Math.floor(width * 0.25));
+
+  // Find peak in left zone (first 25% of crop)
+  let leftPeak = x1;
+  let leftMax = 0;
+  for (let i = x1; i < x1 + searchZone && i < gradient.length; i++) {
+    if (gradient[i] > leftMax) {
+      leftMax = gradient[i];
+      leftPeak = i;
+    }
+  }
+
+  // Find peak in right zone (last 25% of crop)
+  let rightPeak = x2;
+  let rightMax = 0;
+  for (let i = x2 - searchZone; i <= x2 && i < gradient.length; i++) {
+    if (i >= 0 && gradient[i] > rightMax) {
+      rightMax = gradient[i];
+      rightPeak = i;
+    }
+  }
+
+  // Only adjust if peaks are meaningful (above average of the zone)
+  const leftZoneAvg = gradient.slice(x1, x1 + searchZone).reduce((a, b) => a + b, 0) / searchZone || 1;
+  const rightZoneAvg = gradient.slice(Math.max(0, x2 - searchZone), x2 + 1).reduce((a, b) => a + b, 0) / (searchZone + 1) || 1;
+
+  const newX1 = leftMax > leftZoneAvg * 1.5 ? Math.max(0, leftPeak - padding) : x1;
+  const newX2 = rightMax > rightZoneAvg * 1.5 ? Math.min(gradient.length - 1, rightPeak + padding) : x2;
+
+  // Ensure we don't make the crop smaller than reasonable
+  if (newX2 - newX1 < (x2 - x1) * 0.7) {
+    return { x1, x2 };
+  }
+
+  return { x1: newX1, x2: newX2 };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
@@ -142,6 +321,7 @@ export async function POST(req: NextRequest) {
       const meta = await sharp(oriented).metadata();
       const origWidth = meta.width ?? 0;
       const origHeight = meta.height ?? 0;
+      const mimeType = meta.format === "png" ? "image/png" : "image/jpeg";
 
       if (!origWidth || !origHeight) {
         return NextResponse.json(
@@ -150,60 +330,98 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Resize for analysis (smaller for faster processing)
-      const scale = Math.min(1, ANALYSIS_HEIGHT / origHeight);
-      const analysisWidth = Math.round(origWidth * scale);
-      const analysisHeight = Math.round(origHeight * scale);
+      let cropLeft = 0;
+      let cropTop = 0;
+      let cropWidth = 0;
+      let cropHeight = origHeight;
+      let found = false;
 
-      const analysisBuffer = await sharp(oriented)
-        .resize({ width: analysisWidth, height: analysisHeight })
-        .raw()
-        .toBuffer();
+      // Try AI crop first
+      if (OPENROUTER_API_KEY) {
+        const base64 = oriented.toString("base64");
+        const aiBbox = await tryAICrop(base64, mimeType, origWidth, origHeight);
+        if (aiBbox) {
+          cropLeft = Math.round(aiBbox.left);
+          cropTop = Math.round(aiBbox.top);
+          cropWidth = Math.round(aiBbox.width);
+          cropHeight = Math.round(aiBbox.height);
+          found = true;
+        }
+      }
 
-      const channels = 3;
-      const brightness = computeColumnBrightness(
-        analysisBuffer,
-        analysisWidth,
-        analysisHeight,
-        channels
-      );
-      const gradient = computeGradient(brightness);
-      const smoothedGradient = smoothArray(gradient, SMOOTH_WINDOW);
+      // Fallback to heuristic
+      if (!found) {
+        const scale = Math.min(1, ANALYSIS_HEIGHT / origHeight);
+        const analysisWidth = Math.round(origWidth * scale);
+        const analysisHeight = Math.round(origHeight * scale);
 
-      const range = findBestSpineRange(smoothedGradient, analysisWidth);
+        const analysisBuffer = await sharp(oriented)
+          .resize({ width: analysisWidth, height: analysisHeight })
+          .raw()
+          .toBuffer();
 
-      if (!range || !validateSpineRange(smoothedGradient, range, analysisHeight)) {
+        const channels = 3;
+        const brightness = computeColumnBrightness(
+          analysisBuffer,
+          analysisWidth,
+          analysisHeight,
+          channels
+        );
+        const gradient = computeGradient(brightness);
+        const smoothedGradient = smoothArray(gradient, SMOOTH_WINDOW);
+        const smoothedBrightness = smoothArray(brightness, SMOOTH_WINDOW);
+
+        const range = findBestSpineRange(smoothedGradient, smoothedBrightness, analysisWidth);
+
+        if (range && validateSpineRange(smoothedGradient, range, analysisHeight)) {
+          // Second pass: refine edges
+          const refined = refineSpineEdges(smoothedGradient, range.x1, range.x2, 4);
+
+          cropLeft = Math.round(refined.x1 / scale);
+          cropTop = 0;
+          cropWidth = Math.round((refined.x2 - refined.x1) / scale);
+          cropHeight = origHeight;
+          found = true;
+        }
+      }
+
+      if (!found) {
         return NextResponse.json(
           { ok: false, error: "К сожалению корешка не обнаружено" },
           { status: 200 }
         );
       }
 
-      // Scale back to original dimensions
-      const cropX1 = Math.round(range.x1 / scale);
-      const cropX2 = Math.round(range.x2 / scale);
-      const cropWidth = cropX2 - cropX1;
-
       // Crop the spine region from original
       let pipeline = sharp(oriented).extract({
-        left: cropX1,
-        top: 0,
+        left: cropLeft,
+        top: cropTop,
         width: cropWidth,
-        height: origHeight,
+        height: cropHeight,
+      });
+
+      // Add 2px padding with neutral color
+      pipeline = pipeline.extend({
+        top: 2,
+        bottom: 2,
+        left: 2,
+        right: 2,
+        background: { r: 17, g: 17, b: 17, alpha: 1 },
       });
 
       // Resize height to max 1200, don't upscale
-      if (origHeight > 1200) {
+      const targetHeight = cropHeight + 4; // account for padding
+      if (targetHeight > 1200) {
         pipeline = pipeline.resize({ height: 1200, withoutEnlargement: true });
       }
 
-      // Slightly enhance contrast/brightness
-      pipeline = pipeline.modulate({ brightness: 1.02 }).sharpen({ sigma: 0.5 });
+      // Slightly enhance contrast/brightness (mild normalization)
+      pipeline = pipeline.modulate({ brightness: 1.03, saturation: 1.02 }).linear(1.05, -5);
 
-      outputBuffer = await pipeline.webp({ quality: 80 }).toBuffer();
+      outputBuffer = await pipeline.webp({ quality: 82 }).toBuffer();
       const outputMeta = await sharp(outputBuffer).metadata();
-      width = outputMeta.width ?? cropWidth;
-      height = outputMeta.height ?? origHeight;
+      width = outputMeta.width ?? cropWidth + 4;
+      height = outputMeta.height ?? cropHeight + 4;
       ext = "webp";
     } else {
       // No sharp: save as-is, cannot validate aspect ratio reliably

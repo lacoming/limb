@@ -5,7 +5,34 @@ import { DebugCellsPanel } from "@/components/DebugCellsPanel";
 import { LibraryScene, type LibrarySceneRef } from "@/components/LibraryScene";
 import { useBooksStore, computeUserCopiesWithEdition } from "@/lib/books";
 import { fetchByIsbnOpenLibrary } from "@/lib/books/adapters/openLibrary";
-import type { WorkCandidate, EditionCandidate, SpineImage } from "@/lib/books/types";
+import type { WorkCandidate, EditionCandidate, SpineImage, Provenance } from "@/lib/books/types";
+
+interface PhotoCandidate {
+  title: string;
+  authors: string[];
+  isbn?: string;
+  year?: number;
+  confidence: number;
+  notes?: string;
+}
+
+// Throttled save function
+let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+async function saveLibrary() {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(async () => {
+    const data = useBooksStore.getState().serialize();
+    try {
+      await fetch("/api/library/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+    } catch (e) {
+      console.error("Failed to save library:", e);
+    }
+  }, 500);
+}
 
 function BookDetailsCard({
   work,
@@ -196,6 +223,16 @@ export default function Home() {
     edition: EditionCandidate;
   } | null>(null);
   const [spineOverrides, setSpineOverrides] = useState<Map<string, SpineImage>>(new Map());
+
+  // Photo identify state
+  const [photoModalOpen, setPhotoModalOpen] = useState(false);
+  const [photoCover, setPhotoCover] = useState<File | null>(null);
+  const [photoSpine, setPhotoSpine] = useState<File | null>(null);
+  const [photoLoading, setPhotoLoading] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [photoCandidates, setPhotoCandidates] = useState<PhotoCandidate[]>([]);
+  const [photoExtractedText, setPhotoExtractedText] = useState<string | null>(null);
+
   const selectedRowRef = useRef<HTMLDivElement>(null);
   const listContainerRef = useRef<HTMLUListElement>(null);
   const detailsHostRef = useRef<HTMLDivElement>(null);
@@ -210,6 +247,21 @@ export default function Home() {
     () => computeUserCopiesWithEdition(works, editions, userCopies),
     [works, editions, userCopies]
   );
+
+  // Load library from disk on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/library/load");
+        const data = await res.json();
+        if (data.works?.length || data.editions?.length || data.userCopies?.length) {
+          useBooksStore.getState().hydrate(data);
+        }
+      } catch (e) {
+        console.error("Failed to load library:", e);
+      }
+    })();
+  }, []);
 
   const handleCameraChange = useCallback(
     (data: { x: number; y: number; zoom: number }) => {
@@ -338,6 +390,7 @@ export default function Home() {
       const spineImage = spineOverrides.get(edition.id);
       const editionWithSpine = spineImage ? { ...finalEdition, spineImage } : finalEdition;
       useBooksStore.getState().addFromCandidate(work, editionWithSpine);
+      saveLibrary();
       showToast("Book added");
     },
     [showToast, spineOverrides]
@@ -354,6 +407,89 @@ export default function Home() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  // Photo identify handlers
+  const handlePhotoIdentify = useCallback(async () => {
+    if (!photoCover) return;
+    setPhotoLoading(true);
+    setPhotoError(null);
+    setPhotoCandidates([]);
+    setPhotoExtractedText(null);
+
+    const formData = new FormData();
+    formData.append("cover", photoCover);
+    if (photoSpine) formData.append("spine", photoSpine);
+
+    try {
+      const res = await fetch("/api/book/identify", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setPhotoError(data.error || "Ошибка распознавания");
+      } else {
+        setPhotoCandidates(data.candidates || []);
+        setPhotoExtractedText(data.extractedText || null);
+      }
+    } catch (e) {
+      setPhotoError(e instanceof Error ? e.message : "Ошибка сети");
+    } finally {
+      setPhotoLoading(false);
+    }
+  }, [photoCover, photoSpine]);
+
+  const handleAddPhotoCandidate = useCallback(
+    async (candidate: PhotoCandidate) => {
+      const provenance: Provenance = { source: "photo_ai", source_url: "" };
+
+      // If ISBN present, try to fetch from OpenLibrary for better data
+      if (candidate.isbn) {
+        try {
+          const { works, editions } = await fetchByIsbnOpenLibrary(candidate.isbn);
+          if (works.length > 0 && editions.length > 0) {
+            useBooksStore.getState().addFromCandidate(works[0], editions[0]);
+            saveLibrary();
+            showToast("Книга добавлена");
+            setPhotoModalOpen(false);
+            setPhotoCover(null);
+            setPhotoSpine(null);
+            setPhotoCandidates([]);
+            return;
+          }
+        } catch {
+          // Fallback to candidate data
+        }
+      }
+
+      // Create candidate directly
+      const workId = `photo-work:${Date.now()}`;
+      const editionId = `photo-edition:${Date.now()}`;
+      const work: WorkCandidate = {
+        id: workId,
+        title: candidate.title,
+        authors: candidate.authors,
+        provenance,
+      };
+      const edition: EditionCandidate = {
+        id: editionId,
+        workId,
+        isbn: candidate.isbn,
+        year: candidate.year,
+        pageCount: undefined,
+        dimensionsMm: { height: 210, width: 145 },
+        provenance,
+      };
+      useBooksStore.getState().addFromCandidate(work, edition);
+      saveLibrary();
+      showToast("Книга добавлена");
+      setPhotoModalOpen(false);
+      setPhotoCover(null);
+      setPhotoSpine(null);
+      setPhotoCandidates([]);
+    },
+    [showToast]
+  );
 
   return (
     <div className="fixed inset-0 w-screen h-screen overflow-hidden bg-zinc-900">
@@ -512,8 +648,16 @@ export default function Home() {
         <div className="flex items-stretch gap-3">
           {/* Left Panel */}
           <div className="rounded bg-black/60 text-white text-xs overflow-hidden max-w-xs">
-            <div className="px-3 py-2 font-medium border-b border-white/20">
-              Book Search
+            <div className="px-3 py-2 font-medium border-b border-white/20 flex items-center justify-between">
+              <span>Book Search</span>
+              <button
+                type="button"
+                onClick={() => setPhotoModalOpen(true)}
+                className="px-2 py-1 rounded bg-purple-600 hover:bg-purple-500 text-xs"
+                title="Добавить книгу по фото"
+              >
+                По фото
+              </button>
             </div>
             <div className="p-3 space-y-2">
               <div className="flex gap-2">
@@ -715,6 +859,120 @@ export default function Home() {
                 Delete
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Photo Identify Modal */}
+      {photoModalOpen && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70">
+          <div className="bg-zinc-800 rounded-lg px-6 py-4 max-w-md w-full mx-4 text-white max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Добавить книгу по фото</h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setPhotoModalOpen(false);
+                  setPhotoCover(null);
+                  setPhotoSpine(null);
+                  setPhotoCandidates([]);
+                  setPhotoError(null);
+                }}
+                className="text-white/60 hover:text-white text-xl"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* File inputs */}
+            <div className="space-y-3 mb-4">
+              <div>
+                <label className="block text-sm text-white/80 mb-1">
+                  Фото обложки <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setPhotoCover(e.target.files?.[0] || null)}
+                  className="w-full text-sm file:mr-2 file:py-1 file:px-3 file:rounded file:border-0 file:bg-white/20 file:text-white hover:file:bg-white/30"
+                />
+                {photoCover && (
+                  <p className="text-xs text-green-400 mt-1">{photoCover.name}</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm text-white/80 mb-1">
+                  Фото корешка (опционально)
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setPhotoSpine(e.target.files?.[0] || null)}
+                  className="w-full text-sm file:mr-2 file:py-1 file:px-3 file:rounded file:border-0 file:bg-white/20 file:text-white hover:file:bg-white/30"
+                />
+                {photoSpine && (
+                  <p className="text-xs text-green-400 mt-1">{photoSpine.name}</p>
+                )}
+              </div>
+            </div>
+
+            {/* Identify button */}
+            <button
+              type="button"
+              onClick={handlePhotoIdentify}
+              disabled={!photoCover || photoLoading}
+              className="w-full py-2 rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium mb-4"
+            >
+              {photoLoading ? "Распознаю..." : "Распознать"}
+            </button>
+
+            {/* Error */}
+            {photoError && (
+              <p className="text-red-400 text-sm mb-4">{photoError}</p>
+            )}
+
+            {/* Extracted text */}
+            {photoExtractedText && (
+              <div className="mb-4 p-2 bg-white/5 rounded text-xs">
+                <p className="text-white/60 mb-1">Распознанный текст:</p>
+                <p className="text-white/90">{photoExtractedText}</p>
+              </div>
+            )}
+
+            {/* Candidates */}
+            {photoCandidates.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-sm text-white/80">Найденные варианты:</p>
+                {photoCandidates.map((c, i) => (
+                  <div
+                    key={i}
+                    className="p-3 bg-white/5 rounded flex items-start justify-between gap-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-sm">{c.title}</p>
+                      {c.authors.length > 0 && (
+                        <p className="text-white/70 text-xs">{c.authors.join(", ")}</p>
+                      )}
+                      <div className="text-white/50 text-xs mt-1 space-x-2">
+                        {c.year && <span>{c.year}</span>}
+                        {c.isbn && <span>ISBN: {c.isbn}</span>}
+                        <span>Уверенность: {Math.round(c.confidence * 100)}%</span>
+                      </div>
+                      {c.notes && (
+                        <p className="text-white/40 text-xs mt-1">{c.notes}</p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleAddPhotoCandidate(c)}
+                      className="shrink-0 px-3 py-1.5 rounded bg-green-600 hover:bg-green-500 text-xs"
+                    >
+                      Добавить
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
